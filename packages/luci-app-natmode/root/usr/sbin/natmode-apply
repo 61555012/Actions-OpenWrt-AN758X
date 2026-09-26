@@ -82,17 +82,6 @@ get_flag() {  # get_flag <uci_key> <default>
 	esac
 }
 
-set_fullcone() {  # 幂等写入 firewall.@defaults[0].fullcone
-	local val="$1" cur
-	cur="$(uci -q get firewall.@defaults[0].fullcone 2>/dev/null)"
-	if [ "$cur" != "$val" ]; then
-		uci set firewall.@defaults[0].fullcone="$val" 2>/dev/null || return 1
-		uci commit firewall
-		log "firewall fullcone -> $val"
-	fi
-	return 0
-}
-
 # 写入 firewall 的 fullcone 开关，行为与防火墙页面完全一致。
 #
 # 防火墙页（网络 → 防火墙 → 常规设置）的实际动作是：
@@ -439,12 +428,15 @@ case "$1" in
 	reapply) do_reapply ;;
 	status)  do_status ;;
 	sync)    do_sync ;;
+	cleanup) nft_random_del ;;
 	*)
-		echo "用法: natmode-apply [apply|reapply|status|sync]"
+		echo "用法: natmode-apply [apply|reapply|status|sync|cleanup]"
 		echo "  apply    本页 → 防火墙：按 natmode.main.mode 落地"
 		echo "  reapply  防火墙重载后：同步 UCI + 重建 nft 规则"
 		echo "  status   输出状态，并做自愈与反向同步"
 		echo "  sync     防火墙 → 本页：把实际生效模式写回 natmode.main.mode"
+		echo "  cleanup  仅删除本插件注入的 nft 随机端口规则，不动 UCI"
+		echo "           （供 init.d stop_service 调用）"
 		exit 1
 		;;
 esac

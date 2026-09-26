@@ -4,8 +4,7 @@
 		"read": {
 			"uci": [ "natmode", "firewall" ],
 			"file": {
-				"/usr/sbin/natmode-apply": [ "exec" ],
-				"/usr/bin/stun-client": [ "exec" ]
+				"/usr/sbin/natmode-apply": [ "exec" ]
 			}
 		},
 		"write": {
