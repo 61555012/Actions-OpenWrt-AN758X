@@ -197,9 +197,15 @@ nft_random_add() {
 nft_random_del() {
 	local ch h
 	for ch in $(nft_srcnat_chains); do
-		h="$(nft -a list chain inet fw4 "$ch" 2>/dev/null | \
-		     grep 'fully-random' | grep -oE 'handle [0-9]+' | awk '{print $2}' | head -1)"
-		[ -n "$h" ] && nft delete rule inet fw4 "$ch" handle "$h" 2>/dev/null
+		# 取该链上【所有】fully-random 规则的 handle 逐个删除。
+		# 原实现只取 head -1（第一条），若链里残留多条就删不干净 ——
+		# 表现为「当前模式=受限型 NAT3，但随机端口规则=1 条」的
+		# 不一致状态，实际 NAT 行为既不是干净 NAT3 也不是 NAT4。
+		for h in $(nft -a list chain inet fw4 "$ch" 2>/dev/null | \
+		           grep 'fully-random' | grep -oE 'handle [0-9]+' | \
+		           awk '{print $2}'); do
+			nft delete rule inet fw4 "$ch" handle "$h" 2>/dev/null
+		done
 	done
 }
 
@@ -320,8 +326,11 @@ do_apply() {
 	# （顺序反了的话，reload 会把刚插的规则冲掉）
 	fw_reload
 
+	# reload 之后再清一次：确保非 NAT4 模式下没有任何残留随机端口规则
 	if [ "$mode" = "symmetric" ]; then
 		nft_random_add >/dev/null
+	else
+		nft_random_del
 	fi
 
 	log "NAT 模式已应用（本页 → 防火墙）：$mode"
@@ -386,6 +395,18 @@ do_status() {
 		rand="$(nft_random_count)"
 		healed=1
 		log "自愈（同步后）：NAT4 随机端口规则已重新注入"
+	fi
+
+	# ── 反向自愈：非 NAT4 模式却残留随机端口规则 → 清理 ──
+	# 典型触发路径：先前是 NAT4（已注入规则），随后在防火墙页取消勾选
+	# FullCone → do_sync 把 mode 改成 restricted，但 do_sync 不碰 nft，
+	# 于是出现「模式=NAT3、随机端口规则=1 条」的不一致状态，
+	# 实际行为既不是干净 NAT3 也不是 NAT4。
+	if [ "$effective" != "symmetric" ] && [ "${rand:-0}" != "0" ]; then
+		nft_random_del
+		rand="$(nft_random_count)"
+		healed=1
+		log "自愈：清理残留随机端口规则（当前为 $effective，不应存在）"
 	fi
 
 	# 防火墙页「启用 FullCone NAT」复选框此刻的勾选状态

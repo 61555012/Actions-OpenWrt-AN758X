@@ -88,6 +88,13 @@ function renderStatus(st) {
 	if (st.healed === '1')
 		notice.push(E('p', {}, _('已自动修复：NAT4 的随机端口规则此前被防火墙重载清除，现已重新注入。')));
 
+	// 残留随机端口规则：非 NAT4 模式却存在规则，实际行为不干净
+	if (st.effective !== 'symmetric' && st.random_rules !== '0')
+		warn.push(E('p', {}, _('检测到残留的随机端口规则 ')
+			+ st.random_rules + _(' 条，但当前不是全对称型NAT（NAT4）。'
+			+ '这会让实际 NAT 行为既不是干净的 NAT3 也不是 NAT4。'
+			+ '下次打开本页或执行 natmode-apply status 会自动清理。')));
+
 	if (st.module !== 'loaded' && st.effective === 'fullcone')
 		warn.push(E('p', {}, _('未检测到 nft_fullcone 模块，全锥形可能不生效。')));
 
