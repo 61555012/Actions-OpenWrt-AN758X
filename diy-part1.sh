@@ -31,29 +31,9 @@ ADD_TAILSCALE=false    # luci-app-tailscale
 ADD_OPENLIST=false     # luci-app-openlist2（alist/openlist 挂载）
 ADD_SMARTDNS=false     # luci-app-smartdns
 
-# ---------------------------------------------------------
-# 本地包：CI 仓库自带的包（不在任何 feed 里），拷进 package/custom
-# 当前两个：
-#   luci-app-pon-status —— PON 光模块卡片，概览页「系统」下一格
-#                          （文件名 15_pon.js 决定位置）
-#   luci-app-natmode    —— NAT 类型三选一，菜单「网络 → NAT 类型」
-# ---------------------------------------------------------
-LOCAL_PKG_DIR="${GITHUB_WORKSPACE}/packages"
-if [ -d "$LOCAL_PKG_DIR" ]; then
-  for p in "$LOCAL_PKG_DIR"/*; do
-    [ -d "$p" ] || continue
-    # 目录名必须等于包名（luci.mk: PKG_NAME ?= $(notdir ${CURDIR})）
-    rm -rf "$PKG_DIR/$(basename "$p")"
-    cp -r "$p" "$PKG_DIR/"
-    echo "✅ 本地包: $(basename "$p")"
-  done
-
-  # git checkout / zip 传输可能丢掉 exec bit，导致 rpcd 无法 exec、
-  # init.d 无法启动。这里统一补回来（另有 uci-defaults 开机兜底）。
-  find "$PKG_DIR" -type f \
-    \( -path "*/usr/sbin/*" -o -path "*/etc/init.d/*" -o -path "*/usr/libexec/*" \) \
-    -exec chmod +x {} \; 2>/dev/null
-fi
+ADD_LUCI_APP=true       # qwe3017/luci-app 仓库（monorepo）
+                        #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
+                        #   └─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
 
 clone() {  # clone <url> <dir> [branch]
   local url="$1" dir="$2" br="$3"
@@ -71,6 +51,47 @@ clone() {  # clone <url> <dir> [branch]
   echo "::error::克隆失败: $url"
   return 1
 }
+
+# =========================================================
+# qwe3017/luci-app —— 两个 LuCI 插件的来源
+#
+# 这是一个 monorepo，结构为：
+#   luci-app/
+#   ├── luci-app-natmode/
+#   └── luci-app-pon-status/
+#
+# 所以需要 clone 整个仓库，再把子目录拷到 package/custom/。
+# 目录名必须等于包名（luci.mk: PKG_NAME ?= $(notdir ${CURDIR})），
+# 否则 config 里的 CONFIG_PACKAGE_xxx 符号对不上。
+#
+# ⚠️ 为什么不再用 CI 仓库自带的 packages/ 本地包：
+#    上游 natmode 0.1.2 修了一个关键问题 ——
+#    「LuCI 保存时 rpcd 暂存值 CLI 读不到」，导致点了保存但模式没应用
+#    （commit: fix(natmode): apply button missing on PonWrt LuCI fork）。
+#    修法是 apply 支持显式传参：apply <mode> [<fullcone6>] [<auto_offload>]
+#    本地旧版是从 UCI 读值，在保存流程中会读到旧值。
+# =========================================================
+if [ "$ADD_LUCI_APP" = "true" ]; then
+  LUCI_APP_URL="https://github.com/qwe3017/luci-app"
+  LUCI_APP_TMP="$(mktemp -d)/luci-app"
+
+  if ! clone "$LUCI_APP_URL" "$LUCI_APP_TMP" main; then
+    echo "::error::qwe3017/luci-app 拉取失败，natmode / pon-status 会被 defconfig 剔除"
+    exit 1
+  fi
+
+  for p in luci-app-natmode luci-app-pon-status; do
+    if [ ! -f "$LUCI_APP_TMP/$p/Makefile" ]; then
+      echo "::error::$LUCI_APP_TMP/$p/Makefile 不存在，包无法被索引"
+      exit 1
+    fi
+    rm -rf "$PKG_DIR/$p"
+    cp -r "$LUCI_APP_TMP/$p" "$PKG_DIR/"
+    echo "✅ 已拷贝: $p  (版本 $(grep -m1 '^PKG_VERSION' "$PKG_DIR/$p/Makefile" 2>/dev/null | sed 's/PKG_VERSION:=//'))"
+  done
+
+  rm -rf "$LUCI_APP_TMP"
+fi
 
 # --- Airoha SoC 状态页（NPU 卸载 / CPU 频率 / Frame Engine / PPE 流表）---
 # 包名由目录名决定（luci.mk: PKG_NAME ?= $(notdir ${CURDIR})），
@@ -168,6 +189,14 @@ if [ "$ADD_AIROHA_NPU" = "true" ] && [ ! -d "$PKG_DIR/luci-app-airoha-npu" ]; th
   echo "::error::luci-app-airoha-npu 未拉到，config 里的 =y 会被 defconfig 剔除"
   exit 1
 fi
+
+# natmode / pon-status 来自 qwe3017/luci-app（config 里也是 =y）
+for p in luci-app-natmode luci-app-pon-status; do
+  if [ "$ADD_LUCI_APP" = "true" ] && [ ! -d "$PKG_DIR/$p" ]; then
+    echo "::error::$p 未拉到，config 里的 =y 会被 defconfig 剔除"
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------
 # 清理重复嵌套目录
