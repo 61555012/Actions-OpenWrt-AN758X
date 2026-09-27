@@ -4,7 +4,7 @@ env:
   
   BUILD_ROOT: /workdir
   SOURCE: ${{ github.event.inputs.source || 'fork' }}
-  REPO_URL: ${{ github.event.inputs.source == 'upstream' && 'https://github.com/pbs05/ponwrt' || 'https://github.com/qwe3017/ponwrt' }}
+  REPO_URL: ${{ github.event.inputs.source == 'pbs05/ponwrt' && 'https://github.com/pbs05/ponwrt' || 'https://github.com/qwe3017/ponwrt' }}
   FEEDS_CONF: ''
   DIY_P1_SH: diy-part1.sh
   DIY_P2_SH: diy-part2.sh
@@ -26,13 +26,13 @@ on:
   workflow_dispatch:
     inputs:
       source:
-        description: '编译源码仓库（fork 已内置 H3C HM2004-DU）'
+        description: '编译源码仓库'
         required: true
-        default: 'upstream'
+        default: 'pbs05/ponwrt'
         type: choice
         options:
           - fork
-          - upstream
+          - pbs05/ponwrt
       branch:
         description: 'ponwrt 源码分支'
         required: true
