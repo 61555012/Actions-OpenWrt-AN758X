@@ -738,8 +738,10 @@ jobs:
           exit 0
         fi
 
-        BUILD_TIME=$(date +"%Y%m%d-%H%M")
-        RELEASE_TAG=$(echo "${DEVICE_NAME}-${REPO_BRANCH}-${BUILD_TIME}" | sed 's/[^a-zA-Z0-9._-]/-/g')
+        # 固定 tag：机型 + 分支，不含时间戳
+        # 同一机型/分支再次编译时，softprops/action-gh-release 会更新
+        # 这个已存在的 Release（同名固件自动覆盖），不会新建版本。
+        RELEASE_TAG=$(echo "${DEVICE_NAME}-${REPO_BRANCH}" | sed 's/[^a-zA-Z0-9._-]/-/g')
         echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
         touch release.txt
@@ -757,13 +759,13 @@ jobs:
           echo "| 编译时间 | $(date '+%Y-%m-%d %H:%M:%S') (Shanghai) |"
           echo ""
           echo "### 固件文件校验"
-          echo '```' >> release.txt
-          (cd "$FIRMWARE" && sha256sum * 2>/dev/null | grep -vE "sha256sums|packages") >> release.txt
-          echo '```' >> release.txt
+          echo '```'
+          (cd "$FIRMWARE" && sha256sum * 2>/dev/null | grep -vE "sha256sums|packages")
+          echo '```'
           echo ""
           echo "---"
+          echo "> 本 Release 为滚动发布页，仅保留最新一次编译产物。"
           echo "> 安装前请用 AN758x-Stock2UBI 备份原厂 flash，刷机后恢复 PON/校准数据。"
-          echo "> 校准数据：${PROFILE} 对应 $(grep -m1 '^# 校准/身份数据' "$GITHUB_WORKSPACE/${CONFIG_FILE}" | cut -d: -f2-)"
         } >> release.txt
         echo "status=success" >> "$GITHUB_OUTPUT"
 
