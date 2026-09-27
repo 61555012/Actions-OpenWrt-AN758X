@@ -48,7 +48,7 @@ on:
       profile:
         description: '机型 profile (all=全机型编译)'
         required: true
-        default: 'fiberhome_hg5585f-cu'
+        default: 'fiberhome_hg5585f-ct'
         type: choice
         options:
           - fiberhome_hg5585f-cu
