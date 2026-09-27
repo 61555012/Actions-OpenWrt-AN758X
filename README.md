@@ -12,10 +12,7 @@ diy-part1.sh    拉取可选插件到 package/custom（passwall/openclash/mosdns
 diy-part2.sh    默认值定制：① 时区改中国（Asia/Shanghai, CST-8）
                 ② 5G WiFi：国家码 CN / 信道 auto / 频宽 160MHz
 configs/        每机型一份精简 diffconfig（约 440 行，需 make defconfig 展开）
-files/          自定义 rootfs 文件，会自动拷进源码（sbin/tempinfo + 两个 uci-defaults）
-packages/       CI 仓库自带的本地包（不走 clone），由 diy-part1.sh 拷进 package/custom
-                ├─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
-                └─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
+files/          自定义 rootfs 文件，会自动拷进源码（sbin/tempinfo + 两个 uci-defaults））
 ```
 
 ## diy 脚本
@@ -80,18 +77,6 @@ WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"
 - **DFS**：CN 法规下 160MHz 需要信道 36–64，其中 52–64 属 DFS 信道。
   ACS 若选中，启动时会先做雷达检测（CAC），**WiFi 可能延迟 1–10 分钟才出现**
   或自动跳频。这是正常现象，不是故障。
-### 文件结构
-
-```
-packages/luci-app-natmode/
-├── Makefile
-├── root/etc/config/natmode                        # UCI: natmode.main.mode
-├── root/etc/init.d/natmode                        # START=25
-├── root/usr/sbin/natmode-apply                    # apply / status
-├── root/usr/share/rpcd/acl.d/luci-app-natmode.json
-├── root/usr/share/luci/menu.d/luci-app-natmode.json
-└── htdocs/luci-static/resources/view/natmode/mode.js
-```
 
 ## PON 光模块卡片（概览页系统下一格）
 
@@ -224,8 +209,3 @@ endif
 2. 再跑一次 `scope = firmware` 出固件；
 3. 若仍超时，把 `configs/*.config` 里不需要的 luci-app / 语言包删掉再提交。
 
-## 注意事项
-
-- 刷机前用 [AN758x-Stock2UBI](https://github.com/pbs05) 备份原厂 flash；烽火 `factory` 备份需先过 `FiberHome Factory` 转换。
-- 刷完后通过 U-Boot Web 或 LuCI → 网络 → PON → Configuration → PON board data 恢复校准/身份数据，否则 WiFi 与 PON  Registration 异常。
-- `toolchain-cache` Release 由流程自动维护，`Remove old releases` 用 `delete_tag_pattern: ^<DEVICE_NAME>-` 限定，不会误删。
