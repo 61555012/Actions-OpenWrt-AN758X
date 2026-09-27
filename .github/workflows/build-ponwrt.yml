@@ -1,41 +1,23 @@
 name: Build PonWrt (Airoha AN758x PON)
 
-# =========================================================
-# 基于 P3TERX/Actions-OpenWrt 模板重构，适配 pbs05/ponwrt
-#   - 源码: https://github.com/pbs05/ponwrt (默认分支 master)
-#   - 支持 AN7581 / AN7583 全机型选择
-#   - 磁盘空间释放 + 工具链双通道缓存(actions/cache + Release 备份)
-#   - diy-part1 拉插件 / diy-part2 改中国时区
-# =========================================================
-
 env:
-  # 编译根目录：必须静态定义（供 actions/cache 的 path 使用）
+  
   BUILD_ROOT: /workdir
-  # 源码仓库二选一：
-  #   fork     = qwe3017/ponwrt  —— 上游 fork，已合入 H3C HM2004-DU（默认）
-  #   upstream = pbs05/ponwrt    —— 上游原仓，HM2004-DU 需靠 diy-part1.sh 注入
   SOURCE: ${{ github.event.inputs.source || 'fork' }}
   REPO_URL: ${{ github.event.inputs.source == 'upstream' && 'https://github.com/pbs05/ponwrt' || 'https://github.com/qwe3017/ponwrt' }}
-  FEEDS_CONF: ''                       # 留空=使用源码自带 feeds.conf.default(含 pon_drivers/pon_userspace)
-  DIY_P1_SH: diy-part1.sh      # 拉取可选插件
-  DIY_P2_SH: diy-part2.sh      # 时区改为中国
+  FEEDS_CONF: ''
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: true
-  # 由 upload_release 输入控制，手动运行时默认 true
   UPLOAD_RELEASE: ${{ github.event.inputs.upload_release || 'true' }}
-  USE_DL_CACHE: true                   # 缓存 dl 下载目录
-  # ccache 默认关闭：ccache 二进制由 tools/ccache 安装，而 tools 只在
-  # CONFIG_CCACHE 生效时才编入；工具链缓存命中时会跳过 make tools/install，
-  # 导致 ccache 缺失 → 编译报 "ccache: not found" (Error 127)。
-  # 置 true 后流程会自动补装 tools/ccache 并做好失败兜底。
-  USE_CCACHE: false                    # 开启 ccache 并缓存
+  USE_DL_CACHE: true                
+  USE_CCACHE: false                    
   TZ: Asia/Shanghai
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-  # 默认值：手动运行时可被 inputs 覆盖
   REPO_BRANCH: ${{ github.event.inputs.branch || 'master' }}
   SOC: ${{ github.event.inputs.soc || 'an7581' }}
-  PROFILE: ${{ github.event.inputs.profile || 'fiberhome_hg5585f-cu' }}
+  PROFILE: ${{ github.event.inputs.profile || 'fiberhome_hg5585f-ct' }}
   BUILD_SCOPE: ${{ github.event.inputs.scope || 'firmware' }}
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
 
@@ -46,7 +28,7 @@ on:
       source:
         description: '编译源码仓库（fork 已内置 H3C HM2004-DU）'
         required: true
-        default: 'fork'
+        default: 'upstream'
         type: choice
         options:
           - fork
