@@ -26,7 +26,7 @@ env:
   NPU_CLANKER: ${{ github.event.inputs.npu_clanker || '0' }}
   NPU_FW_PREFIX: ${{ github.event.inputs.npu_fw_prefix || '' }}
   NPU_WLAN_MEM: ${{ github.event.inputs.npu_wlan_mem || 'true' }}
-  NPU_SRC_REF: ${{ github.event.inputs.npu_src_ref || '735529c10d5120e10f7e4a6ddf97fb384fce9903' }}
+  NPU_SRC_REF: ${{ github.event.inputs.npu_src_ref || 'main' }}
 
 on:
   repository_dispatch:
@@ -130,9 +130,9 @@ on:
           - 'true'
           - 'false'
       npu_src_ref:
-        description: 'ClankerNPU 源码 ref (commit / 分支 / tag)，默认钉 commit 保证可复现'
+        description: 'ClankerNPU 源码 ref (默认 main=跟上游最新；也可填 commit sha / tag 钉死版本)'
         required: false
-        default: '735529c10d5120e10f7e4a6ddf97fb384fce9903'
+        default: 'main'
       upload_release:
         description: '固件发布到 Release（false 则只传 Artifact）'
         required: false
