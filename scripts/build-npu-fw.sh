@@ -10,6 +10,11 @@
 #       AN7583 -> an7583
 #   自定义前缀则由 apply-npu-dts.sh 写 DTS firmware-name 属性指定。
 #
+# 产物默认落在 files/lib/firmware/airoha/ —— 该目录会随 files/ 一起被拷进
+# 源码树并覆盖进 rootfs（files/ 的铺设在 ipk 安装之后，所以必然盖住
+# linux-firmware 那份官方固件）。这样绕开了「stock 固件包是 subtarget
+# DEFAULT_PACKAGE、defconfig 强制拉回 =y、禁不掉」的问题。
+#
 # 用法（全部走环境变量，便于 GitHub Actions 直接传）：
 #   SOC=AN7581 WIFI=MT7916 ./scripts/build-npu-fw.sh
 #   SOC=AN7583 WIFI=MT7993 CLANKER=1 FW_PREFIX=an7583_mt7993 ./scripts/build-npu-fw.sh
@@ -35,7 +40,7 @@ case "$SOC" in
 esac
 FW_PREFIX="${FW_PREFIX:-$DEF_PREFIX}"
 
-OUT_DIR="${OUT_DIR:-$(pwd)/packages/airoha-npu-clanker-firmware/files/lib/firmware/airoha}"
+OUT_DIR="${OUT_DIR:-$(pwd)/files/lib/firmware/airoha}"
 WORK="${WORK:-$(pwd)/.clanker-build}"
 
 RV32_MAX=$((0x200000))

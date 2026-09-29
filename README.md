@@ -14,7 +14,7 @@ diy-part2.sh    默认值定制：① 时区改中国（Asia/Shanghai, CST-8）
 configs/        每机型一份精简 diffconfig（约 440 行，需 make defconfig 展开）
 files/          自定义 rootfs 文件，会自动拷进源码（sbin/tempinfo + 两个 uci-defaults））
 scripts/        NPU 固件现编脚本（build-npu-fw.sh / apply-npu-dts.sh）
-packages/       CI 仓库自带的本地包（airoha-npu-clanker-firmware，供 npu_fw=clanker 用）
+files/lib/firmware/airoha/   ClankerNPU 编译产物落点，会覆盖进 rootfs（构建时生成，不入库）
 ```
 
 ## diy 脚本
@@ -182,16 +182,43 @@ NPU 是 Airoha SoC 里那颗 RISC-V 核，**不是** Linux 驱动 —— host �
 
 ```
 diy-part1.sh 拉插件
-  └─> 5.5  Build NPU firmware (ClankerNPU)   ← 包必须先落在 package/custom
+  └─> 5.5  Build NPU firmware (ClankerNPU)   ← 产物写进 CI 仓库的 files/lib/firmware/airoha/
 载入 .config（基座 + 机型精简配置）
+      ↑ 这一步把整个 files/ 拷进源码树，NPU 镜像随之进入源码树
 裁剪机型
-  └─> 7.5  Switch NPU firmware package       ← defconfig 之前改 .config
+  └─> 7.5  Switch NPU firmware package       ← clanker/none 把 stock 包置 n；stock 恢复
 diy-part2.sh
-make defconfig + 校验（含 NPU 固件包校验）
+make defconfig + 校验（含 NPU 固件校验）
 ```
 
-包必须在 `defconfig` 之前出现在 `package/custom`，否则 kconfig 会静默丢符号，
-编完才发现固件没换。
+### clanker 怎么替换 stock 固件
+
+`airoha-en7581-npu-firmware` 虽然是 an7581 **subtarget 的 DEFAULT_PACKAGE**
+（`target/linux/airoha/an7581/target.mk`：
+`DEFAULT_PACKAGES += airoha-en7581-npu-firmware kmod-nf-conntrack-bridge uboot-envtools`），
+但**它禁得掉**：`scripts/package-metadata.pl` 给每个包生成的是
+
+```
+config PACKAGE_airoha-en7581-npu-firmware
+	tristate "..."
+	default y if DEFAULT_airoha-en7581-npu-firmware
+```
+
+是 `default`（不是 `select`）。kconfig 里 `default` 只在符号**没有用户值**时生效，
+`.config` 里显式写 `# CONFIG_PACKAGE_x is not set` 就是用户值 n，defconfig 会保留。
+**不需要去改 `target.mk`。**
+
+`npu_fw=clanker` 时双保险，两条都走：
+
+1. step 7.5 把三个 stock 包在 `.config` 里置 `is not set` → 不装 stock 镜像；
+2. step 5.5 把 ClankerNPU 编出的镜像放进 `files/lib/firmware/airoha/`。
+   OpenWrt 是在 **ipk 安装完之后**才把 `files/` 铺进 rootfs 的，所以即便某天
+   defconfig 把 stock 拉回 `y`，这一层覆盖仍然生效。
+
+> ⚠️ 手动改 configs 时注意：**基座和机型两份 config 都要改**。
+> `configs/an7581.config`（基座）和各 `configs/<profile>.config` 里都有那行 `=y`，
+> step 6 是「先铺基座、再追加机型」，机型那行在后会覆盖基座。只改一处等于没改。
+> 走 workflow 的 `npu_fw` 选项不受此影响 —— step 7.5 用的是全局 sed，两处都处理。
 
 ### 典型用法
 
