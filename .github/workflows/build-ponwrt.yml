@@ -20,6 +20,13 @@ env:
   PROFILE: ${{ github.event.inputs.profile || 'fiberhome_hg5585f-ct' }}
   BUILD_SCOPE: ${{ github.event.inputs.scope || 'firmware' }}
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
+  # ---- NPU 固件（RISC-V 裸机固件，由工作流按机型现编或沿用仓库自带）----
+  NPU_FW: ${{ github.event.inputs.npu_fw || 'stock' }}
+  NPU_WIFI: ${{ github.event.inputs.npu_wifi || 'auto' }}
+  NPU_CLANKER: ${{ github.event.inputs.npu_clanker || '0' }}
+  NPU_FW_PREFIX: ${{ github.event.inputs.npu_fw_prefix || '' }}
+  NPU_WLAN_MEM: ${{ github.event.inputs.npu_wlan_mem || 'true' }}
+  NPU_SRC_REF: ${{ github.event.inputs.npu_src_ref || '735529c10d5120e10f7e4a6ddf97fb384fce9903' }}
 
 on:
   repository_dispatch:
@@ -80,6 +87,52 @@ on:
         options:
           - 'false'
           - 'true'
+      npu_fw:
+        description: 'NPU 固件来源 (stock=仓库自带 linux-firmware；clanker=用 ClankerNPU 现编)'
+        required: true
+        default: 'stock'
+        type: choice
+        options:
+          - stock
+          - clanker
+          - none
+      npu_wifi:
+        description: 'NPU 固件变体: WiFi 芯片 (auto=按机型推断；MT7916/MT7996=kite，其余=eagle)'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - MT7916
+          - MT7992
+          - MT7996
+          - MT7991
+          - MT7993
+          - NOWIFI
+      npu_clanker:
+        description: 'CLANKER=1 适配 Clanker 自改 host driver (换固件需同时换驱动，一般保持 0)'
+        required: false
+        default: '0'
+        type: choice
+        options:
+          - '0'
+          - '1'
+      npu_fw_prefix:
+        description: '固件名前缀，留空=驱动默认名 (AN7581: en7581 / AN7583: an7583)，此时不用改 DTS'
+        required: false
+        default: ''
+      npu_wlan_mem:
+        description: '给机型 DTS 补 WiFi 卸载所需的 NPU 保留内存区 (pkt/tx-pkt/tx-bufid/ba)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      npu_src_ref:
+        description: 'ClankerNPU 源码 ref (commit / 分支 / tag)，默认钉 commit 保证可复现'
+        required: false
+        default: '735529c10d5120e10f7e4a6ddf97fb384fce9903'
       upload_release:
         description: '固件发布到 Release（false 则只传 Artifact）'
         required: false
@@ -143,12 +196,31 @@ jobs:
           echo "CONFIG_FILE=configs/${PROFILE}.config" >> "$GITHUB_ENV"
         fi
 
+        # ---- NPU 固件变体：auto 时按机型推断 WiFi 芯片 ----
+        # MT7916 / MT7996 走 kite 数据面，MT7991 / MT7992 / MT7993 走 eagle，
+        # 两个数据面的镜像不通用，选错 NPU 起不来或 WiFi 卸载不工作。
+        NPU_WIFI="${NPU_WIFI}"
+        if [ "$NPU_WIFI" = "auto" ]; then
+          case "$PROFILE" in
+            fiberhome_hg5585f-ct|fiberhome_hg5585f-cu|znxt_zn515xg-d|znxt_zn504xg-d)
+              NPU_WIFI="MT7916" ;;
+            all)
+              NPU_WIFI="MT7916"
+              echo "::warning::profile=all 无法按机型推断 WiFi 芯片，默认 MT7916（所有机型只会装同一份固件）" ;;
+            *)
+              NPU_WIFI="MT7916"
+              echo "::warning::profile=$PROFILE 的 WiFi 芯片未登记，默认 MT7916；与实际不符请手动选 npu_wifi" ;;
+          esac
+        fi
+        echo "NPU_WIFI=$NPU_WIFI" >> "$GITHUB_ENV"
+
         echo "========================================"
         echo "SoC      : $SOC"
         echo "Profile  : $PROFILE"
         echo "Source   : ${SOURCE} (${REPO_URL})"
         echo "Branch   : ${REPO_BRANCH}"
         echo "Scope    : ${BUILD_SCOPE}"
+        echo "NPU 固件 : ${NPU_FW} / ${NPU_WIFI} / clanker=${NPU_CLANKER} / mem=${NPU_WLAN_MEM}"
         echo "========================================"
 
     # =========================================================
@@ -245,6 +317,44 @@ jobs:
         "$GITHUB_WORKSPACE/$DIY_P1_SH"
 
     # =========================================================
+    # 5.5 编译 NPU 固件 (ClankerNPU) —— 仅在 npu_fw=clanker 时执行
+    #     必须放在载入 .config / defconfig 之前：包要先出现在
+    #     package/custom 里才会被 kconfig 索引到。
+    # =========================================================
+    - name: Build NPU firmware (ClankerNPU)
+      if: env.NPU_FW == 'clanker' && env.BUILD_SCOPE != 'toolchain-only'
+      run: |
+        set -euo pipefail
+        cd "$BUILD_ROOT/openwrt"
+        REPO_DIR="$GITHUB_WORKSPACE"
+        SOC_UP=$(echo "$SOC" | tr 'a-z' 'A-Z')
+        chmod +x "$REPO_DIR/scripts/"*.sh
+
+        SOC="$SOC_UP" WIFI="$NPU_WIFI" CLANKER="$NPU_CLANKER" \
+        CLANKER_REF="$NPU_SRC_REF" FW_PREFIX="$NPU_FW_PREFIX" \
+        OUT_DIR="$REPO_DIR/packages/airoha-npu-clanker-firmware/files/lib/firmware/airoha" \
+        WORK="$REPO_DIR/.clanker-build" \
+          bash "$REPO_DIR/scripts/build-npu-fw.sh"
+
+        # 目录名即包名（buildroot: PKG_NAME ?= $(notdir ${CURDIR})），别改名，
+        # 否则 .config 里的 CONFIG_PACKAGE_xxx 对不上会被 defconfig 静默剔除
+        rm -rf package/custom/airoha-npu-clanker-firmware
+        cp -r "$REPO_DIR/packages/airoha-npu-clanker-firmware" package/custom/
+        if [ ! -f package/custom/airoha-npu-clanker-firmware/Makefile ]; then
+          echo "::error::NPU 固件包未就位，defconfig 会静默剔除它"
+          exit 1
+        fi
+
+        # DTS：补 WiFi 卸载保留内存区；固件名非默认时写 firmware-name
+        SOC="$SOC" PROFILE="$PROFILE" WIFI="$NPU_WIFI" \
+        FW_PREFIX="$NPU_FW_PREFIX" ADD_WLAN_MEM="$NPU_WLAN_MEM" \
+        PONWRT_DIR=. bash "$REPO_DIR/scripts/apply-npu-dts.sh"
+
+        echo "===== NPU 固件元信息 ====="
+        cat "$REPO_DIR/.clanker-build/npu-fw.env"
+        ls -l package/custom/airoha-npu-clanker-firmware/files/lib/firmware/airoha/
+
+    # =========================================================
     # 6. 加载 .config —— 源码基座 defconfig 打底 + 机型精简配置追加
     # =========================================================
     - name: Load custom configuration
@@ -304,6 +414,33 @@ jobs:
         fi
 
     # =========================================================
+    # 7.5 切换 NPU 固件包 —— 在 defconfig 之前改 .config
+    #     clanker 与 stock 装的是同一批文件名，必须互斥
+    # =========================================================
+    - name: Switch NPU firmware package
+      run: |
+        cd "$BUILD_ROOT/openwrt"
+        STOCK_PKGS="airoha-en7581-npu-firmware airoha-en7581-mt7996-npu-firmware airoha-an7583-npu-firmware"
+
+        if [ "$NPU_FW" = "clanker" ]; then
+          for p in $STOCK_PKGS; do
+            sed -i "s|^CONFIG_PACKAGE_${p}=[ym]|# CONFIG_PACKAGE_${p} is not set|" .config
+            grep -q "^# CONFIG_PACKAGE_${p} is not set" .config || echo "# CONFIG_PACKAGE_${p} is not set" >> .config
+          done
+          grep -q "^CONFIG_PACKAGE_airoha-npu-clanker-firmware=y" .config \
+            || echo "CONFIG_PACKAGE_airoha-npu-clanker-firmware=y" >> .config
+          echo "✅ NPU 固件已切到 clanker (变体: ${NPU_WIFI})"
+        elif [ "$NPU_FW" = "none" ]; then
+          for p in $STOCK_PKGS airoha-npu-clanker-firmware; do
+            sed -i "s|^CONFIG_PACKAGE_${p}=[ym]|# CONFIG_PACKAGE_${p} is not set|" .config
+            grep -q "^# CONFIG_PACKAGE_${p} is not set" .config || echo "# CONFIG_PACKAGE_${p} is not set" >> .config
+          done
+          echo "::warning::npu_fw=none：不装任何 NPU 固件，NPU 不会起来（只剩有线软件转发）"
+        else
+          echo "NPU 固件保持 stock（ponwrt 自带的 linux-firmware 版本）"
+        fi
+
+    # =========================================================
     # 8. diy-part2.sh —— 时区改为中国
     # =========================================================
     - name: Set timezone to China (diy-part2.sh)
@@ -339,6 +476,21 @@ jobs:
           exit 1
         fi
         echo "✅ PON 关键包校验通过"
+
+        # =========================================================
+        # NPU 固件包校验：clanker 包必须启用，且不能与 stock 包同开
+        # =========================================================
+        if [ "${NPU_FW}" = "clanker" ] && [ "${BUILD_SCOPE}" != "toolchain-only" ]; then
+          if ! grep -q "^CONFIG_PACKAGE_airoha-npu-clanker-firmware=y" .config; then
+            echo "::error::NPU 固件包在 defconfig 后未启用，检查 package/custom 下的包目录名"
+            exit 1
+          fi
+          if grep -qE '^CONFIG_PACKAGE_airoha-(en7581|en7581-mt7996|an7583)-npu-firmware=[ym]' .config; then
+            echo "::error::stock NPU 固件包仍为 y，会与 clanker 包装同一批文件名"
+            exit 1
+          fi
+          echo "✅ NPU 固件包校验通过 (clanker / ${NPU_WIFI})"
+        fi
 
         # =========================================================
         # 状态插件校验：第三方包若在 package/custom 里缺失，
@@ -739,7 +891,27 @@ jobs:
           echo "| 分支 | \`${REPO_BRANCH}\` |"
           echo "| 提交 | \`$(cd "$BUILD_ROOT"/openwrt && git rev-parse --short HEAD)\` |"
           echo "| 编译时间 | $(date '+%Y-%m-%d %H:%M:%S') (Shanghai) |"
+          echo "| NPU 固件 | \`${NPU_FW}\`$( [ "$NPU_FW" = "clanker" ] && echo " (${NPU_WIFI}, ClankerNPU)" ) |"
           echo ""
+
+          # NPU 固件用 ClankerNPU 现编时，把版本/变体/校验写进 Release 便于回溯
+          if [ "$NPU_FW" = "clanker" ] && [ -f "$GITHUB_WORKSPACE/.clanker-build/npu-fw.env" ]; then
+            # shellcheck disable=SC1091
+            . "$GITHUB_WORKSPACE/.clanker-build/npu-fw.env"
+            {
+              echo "### NPU 固件 (ClankerNPU)"
+              echo "| 项目 | 详情 |"
+              echo "|------|------|"
+              echo "| SoC | \`${NPU_SOC}\` |"
+              echo "| WiFi 变体 | \`${NPU_WIFI}\` |"
+              echo "| 源码 ref | \`${NPU_GITREV}\` |"
+              echo "| 固件名前缀 | \`${NPU_FW_PREFIX}\` |"
+              echo "| npu_rv32.bin | ${NPU_RV32_SIZE} bytes (上限 2097152) |"
+              echo "| npu_data.bin | ${NPU_DATA_SIZE} bytes (上限 65536) |"
+              echo "| CLANKER | \`${NPU_CLANKER}\` |"
+              echo ""
+            } >> release.txt
+          fi
           echo "### 固件文件校验"
           echo '```'
           (cd "$FIRMWARE" && sha256sum * 2>/dev/null | grep -vE "sha256sums|packages")
