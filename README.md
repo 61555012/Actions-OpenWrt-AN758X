@@ -13,6 +13,8 @@ diy-part2.sh    默认值定制：① 时区改中国（Asia/Shanghai, CST-8）
                 ② 5G WiFi：国家码 CN / 信道 auto / 频宽 160MHz
 configs/        每机型一份精简 diffconfig（约 440 行，需 make defconfig 展开）
 files/          自定义 rootfs 文件，会自动拷进源码（sbin/tempinfo + 两个 uci-defaults））
+scripts/        NPU 固件现编脚本（build-npu-fw.sh / apply-npu-dts.sh）
+packages/       CI 仓库自带的本地包（airoha-npu-clanker-firmware，供 npu_fw=clanker 用）
 ```
 
 ## diy 脚本
@@ -132,6 +134,101 @@ SHOW_PON_OPTICS=0    # 只显示温度（CPU / WiFi / PON）
 | AN7583 | `nokia_xg-040g-mf` `nokia_xg-040g-mf-ubi` |
 
 机型名写错会在 `Generate toolchain cache key` 步骤直接报 `::error::` 并退出，不会静默地全机型编译。
+
+## NPU 固件选择（stock / clanker / none）
+
+NPU 是 Airoha SoC 里那颗 RISC-V 核，**不是** Linux 驱动 —— host 端驱动 `airoha_npu`
+随内核编出，它按固定名字找两个固件镜像：
+
+| 镜像 | 默认文件名 | 上限 | 加载去向 |
+|---|---|---|---|
+| rv32（text+rodata） | `airoha/en7581_npu_rv32.bin`（AN7583 为 `an7583_*`） | 2 MiB | `npu_binary` @0x84000000 |
+| data（.data） | `airoha/en7581_npu_data.bin` | 64 KiB | NPU 本地 SRAM |
+
+`npu_fw` 决定用哪一份：
+
+| 选项 | 行为 |
+|---|---|
+| `stock`（默认） | 用 ponwrt 自带包 `airoha-en7581-npu-firmware`（linux-firmware 里的镜像，MT7992 / **eagle** 数据面） |
+| `clanker` | 用 [ClankerNPU](https://github.com/ClankerConstruction/ClankerNPU) 现编，变体由 `npu_wifi` 决定 |
+| `none` | 不装任何固件（NPU 不起，只剩有线软件转发） |
+
+> 为什么要能换：烽火 HG5585F-CT/CU、兆能 ZN515XG-D / ZN504XG-D 用的是
+> **MT7916D（14c3:7906）= kite 数据面**，而 stock 镜像是 eagle 的，两者不通用。
+
+### 相关输入项
+
+| 输入 | 默认 | 说明 |
+|---|---|---|
+| `npu_fw` | `stock` | `stock` / `clanker` / `none` |
+| `npu_wifi` | `auto` | 变体：`auto` 按机型推断，或手动选 `MT7916` `MT7992` `MT7996` `MT7991` `MT7993` `NOWIFI` |
+| `npu_clanker` | `0` | `1` = 适配 Clanker 自改的 host driver。**配 ponwrt 自带驱动必须保持 0** |
+| `npu_fw_prefix` | 空 | 固件名前缀。空 = 驱动默认名（`en7581` / `an7583`），此时不用改 DTS |
+| `npu_wlan_mem` | `true` | 给机型 DTS 补 WiFi 卸载必需的保留内存区（pkt / tx-pkt / tx-bufid / ba） |
+| `npu_src_ref` | `735529c1…` | ClankerNPU 源码 ref，钉 commit 保证产物可复现 |
+
+### 可用变体（ClankerNPU 共 11 个）
+
+| SoC | 可选 WiFi 芯片 |
+|---|---|
+| AN7552 | MT7916、MT7991、MT7993 |
+| AN7581 | MT7916、MT7992、MT7996 |
+| AN7583 | MT7916、MT7992、MT7993、MT7996、NOWIFI |
+
+`MT7916` / `MT7996` 走 **kite** 数据面，`MT7991` / `MT7992` / `MT7993` 走 **eagle**。
+组合写错会在 `Build NPU firmware` 步骤开头直接报错，不会白跑一趟编译。
+
+### 执行顺序（不能反）
+
+```
+diy-part1.sh 拉插件
+  └─> 5.5  Build NPU firmware (ClankerNPU)   ← 包必须先落在 package/custom
+载入 .config（基座 + 机型精简配置）
+裁剪机型
+  └─> 7.5  Switch NPU firmware package       ← defconfig 之前改 .config
+diy-part2.sh
+make defconfig + 校验（含 NPU 固件包校验）
+```
+
+包必须在 `defconfig` 之前出现在 `package/custom`，否则 kconfig 会静默丢符号，
+编完才发现固件没换。
+
+### 典型用法
+
+| 场景 | 输入 |
+|---|---|
+| HG5585F-CT / ZN515XG-D 换成 kite 固件 | `npu_fw=clanker`（`npu_wifi` 自动推断为 MT7916） |
+| Nokia XG-040G-MF（AN7583） | `profile=nokia_xg-040g-mf` + `npu_fw=clanker` + `npu_wifi=MT7993` |
+| 只想要有线 PPE / HWNAT 卸载 | `npu_wlan_mem=false` |
+| 完全不装固件 | `npu_fw=none` |
+| 跟 ClankerNPU 上游最新代码 | `npu_src_ref=HEAD`（或填分支名） |
+
+### 注意事项
+
+1. **`npu_clanker` 保持 0**：`CLANKER=1` 会加 `-DUSE_CLANKER_DRIVER`，是给 Clanker 自己改的
+   host driver 用的，其 Makefile 注释明说配 stock 驱动可能坏；且它只影响 eagle 的 `sta_q`
+   与 SRAM type 41 的 sizing，kite 变体开了也没差别。
+2. **工具链必须是 elf/newlib**：固件用 `-march=rv32imc_zicsr_zifencei -mabi=ilp32` 编，
+   `riscv64-linux-gnu` 编不了；脚本会自动下载 xpack `riscv-none-elf-gcc 14.2.0-3`（约 100 MB）。
+3. **data 段只有 64 KiB 上限**，比 rv32 的 2 MiB 紧得多；脚本编完先自检，超限直接失败，
+   不会编出刷上才炸的镜像。
+4. **机型 → WiFi 映射表**在 `Resolve device profile` 步骤里，只登记了
+   `fiberhome_hg5585f-ct/cu` 与 `znxt_zn515xg-d/znxt_zn504xg-d`；其他机型会打 warning
+   并回退 MT7916，请手动选 `npu_wifi`。
+5. **`profile=all` + `clanker`** 只会给所有机型装同一份固件，脚本会 warning，建议按机型分别编。
+6. Release 说明里会带上 NPU 固件的 SoC / 变体 / gitrev / 两个 bin 的大小，便于回溯版本。
+
+### 刷完怎么验
+
+```sh
+dmesg | grep -i npu           # probe 时打 NPU fw version，固件 boot 行带 GITREV
+ls -l /lib/firmware/airoha/   # 两个 bin 在位
+```
+
+- 缺文件或名字不匹配：`request_firmware_direct()` 返回 `-ENOENT`，驱动映射成 `-EPROBE_DEFER`，
+  NPU 一直不绑定（`deferred probe pending` 里能看到具体文件名），不会像以前那样卡 60 秒 sysfs fallback。
+- 大小超限：直接 `-E2BIG`。
+- LuCI「Airoha SoC 状态页」（`luci-app-airoha-npu`）可看 NPU 卸载 / PPE 流表是否正常。
 
 ## 工具链缓存机制
 
