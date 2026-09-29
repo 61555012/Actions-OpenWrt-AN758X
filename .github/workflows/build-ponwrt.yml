@@ -429,7 +429,6 @@ jobs:
         disable_stock() {
           for p in $STOCK_PKGS; do
             sed -i "s|^CONFIG_PACKAGE_${p}=[ym]|# CONFIG_PACKAGE_${p} is not set|" .config
-            grep -q "^# CONFIG_PACKAGE_${p} is not set" .config || echo "# CONFIG_PACKAGE_${p} is not set" >> .config
           done
         }
 
