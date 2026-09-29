@@ -165,7 +165,7 @@ NPU 是 Airoha SoC 里那颗 RISC-V 核，**不是** Linux 驱动 —— host �
 | `npu_clanker` | `0` | `1` = 适配 Clanker 自改的 host driver。**配 ponwrt 自带驱动必须保持 0** |
 | `npu_fw_prefix` | 空 | 固件名前缀。空 = 驱动默认名（`en7581` / `an7583`），此时不用改 DTS |
 | `npu_wlan_mem` | `true` | 给机型 DTS 补 WiFi 卸载必需的保留内存区（pkt / tx-pkt / tx-bufid / ba） |
-| `npu_src_ref` | `735529c1…` | ClankerNPU 源码 ref，钉 commit 保证产物可复现 |
+| `npu_src_ref` | `main` | ClankerNPU 源码 ref（`main`=跟上游最新，也可填 commit sha / tag 钉死版本） |
 
 ### 可用变体（ClankerNPU 共 11 个）
 
@@ -201,7 +201,7 @@ make defconfig + 校验（含 NPU 固件包校验）
 | Nokia XG-040G-MF（AN7583） | `profile=nokia_xg-040g-mf` + `npu_fw=clanker` + `npu_wifi=MT7993` |
 | 只想要有线 PPE / HWNAT 卸载 | `npu_wlan_mem=false` |
 | 完全不装固件 | `npu_fw=none` |
-| 跟 ClankerNPU 上游最新代码 | `npu_src_ref=HEAD`（或填分支名） |
+| 想钉死某一版固件 | `npu_src_ref=<commit sha>`（如 `735529c10d5120e10f7e4a6ddf97fb384fce9903`） |
 
 ### 注意事项
 
@@ -212,11 +212,15 @@ make defconfig + 校验（含 NPU 固件包校验）
    `riscv64-linux-gnu` 编不了；脚本会自动下载 xpack `riscv-none-elf-gcc 14.2.0-3`（约 100 MB）。
 3. **data 段只有 64 KiB 上限**，比 rv32 的 2 MiB 紧得多；脚本编完先自检，超限直接失败，
    不会编出刷上才炸的镜像。
-4. **机型 → WiFi 映射表**在 `Resolve device profile` 步骤里，只登记了
+4. **`npu_src_ref` 默认 `main`（跟上游最新）**：好处是总能吃到 ClankerNPU 的修复，
+   代价是**不同时间跑 CI 编出的固件可能不同** —— 上游一改代码，行为就跟着变（且没法复现）。
+   出问题时建议填 commit sha 钉死，先本地编一次验证再定。
+   无论用哪种，Release 说明里都会记下当次的实际 gitrev，可以回溯这台机器刷的是哪版。
+5. **机型 → WiFi 映射表**在 `Resolve device profile` 步骤里，只登记了
    `fiberhome_hg5585f-ct/cu` 与 `znxt_zn515xg-d/znxt_zn504xg-d`；其他机型会打 warning
    并回退 MT7916，请手动选 `npu_wifi`。
-5. **`profile=all` + `clanker`** 只会给所有机型装同一份固件，脚本会 warning，建议按机型分别编。
-6. Release 说明里会带上 NPU 固件的 SoC / 变体 / gitrev / 两个 bin 的大小，便于回溯版本。
+6. **`profile=all` + `clanker`** 只会给所有机型装同一份固件，脚本会 warning，建议按机型分别编。
+7. Release 说明里会带上 NPU 固件的 SoC / 变体 / gitrev / 两个 bin 的大小，便于回溯版本。
 
 ### 刷完怎么验
 

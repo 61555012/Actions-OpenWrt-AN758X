@@ -22,8 +22,8 @@ WIFI="${WIFI:-MT7916}"
 # 1 = 适配 Clanker 自己改过的 host driver（换固件的同时必须换驱动）
 CLANKER="${CLANKER:-0}"
 REPO="${CLANKER_REPO:-https://github.com/ClankerConstruction/ClankerNPU}"
-# 钉住 commit，保证每次 CI 编出的镜像可复现（换版本改这个或传 CLANKER_REF=master）
-CLANKER_REF="${CLANKER_REF:-735529c10d5120e10f7e4a6ddf97fb384fce9903}"
+# 源码 ref：默认跟 main 最新；也可以填 commit sha / tag / 分支名钉死版本
+CLANKER_REF="${CLANKER_REF:-main}"
 XPACK_VER="${XPACK_VER:-14.2.0-3}"
 
 # 固件前缀：未指定时按 SoC 用驱动默认名
@@ -84,13 +84,18 @@ if [ ! -d "$SRC/.git" ]; then
   git -C "$SRC" init -q
   git -C "$SRC" remote add origin "$REPO"
 fi
-if ! git -C "$SRC" fetch -q --depth 1 origin "$CLANKER_REF" 2>/dev/null; then
-  echo ">>> 按 ref 浅拉失败，改为全量拉取"
+# CLANKER_REF 可以是分支名(main)、tag 或 commit sha。
+# 浅拉后统一 checkout FETCH_HEAD —— 分支名和 sha 都能解析，
+# 而 git fetch <branch> 不会创建本地分支引用，直接 checkout <branch> 会失败。
+if git -C "$SRC" fetch -q --depth 1 origin "$CLANKER_REF" 2>/dev/null; then
+  git -C "$SRC" checkout -q FETCH_HEAD
+else
+  echo ">>> 按 ref 浅拉失败，改为全量拉取后按名字 checkout"
   git -C "$SRC" fetch -q origin
+  git -C "$SRC" checkout -q "$CLANKER_REF" || git -C "$SRC" checkout -q FETCH_HEAD
 fi
-git -C "$SRC" checkout -q "$CLANKER_REF"
 GITREV="$(git -C "$SRC" rev-parse --short HEAD)"
-echo ">>> ClankerNPU @ $GITREV  (${SOC}_${WIFI})"
+echo ">>> ClankerNPU @ $GITREV  (ref=$CLANKER_REF, ${SOC}_${WIFI})"
 
 # ------------------------------------------------------------------
 # 3) 编译
