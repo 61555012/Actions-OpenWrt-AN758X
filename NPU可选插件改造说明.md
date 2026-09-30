@@ -64,6 +64,27 @@ CONFIG_PACKAGE_airoha-en7581-npu-firmware=y
 > ponwrt 基座 config 里大小写不一致（写成 `airoha-en7581-MT7996-npu-firmware`），
 > 脚本一律转小写再比对，不会漏。
 
+## 关于 `package/feeds/custom` 不存在（误报）
+
+`diy-part1.sh` 以前把 `package/custom` 注册成 `src-link custom` feed，
+并以 `package/feeds/custom/` 是否有符号链接来判断索引成功。这个判据是错的：
+
+- `prepare-tmpinfo` 直接扫 `package/` 树（`find -L package -maxdepth 5 -name Makefile`），
+  `package/custom/<pkg>/Makefile` 深度只有 3，**本来就会被扫到，不需要注册 feed**；
+- `feeds/base` 已经指向 `../package`，再加一个 `feeds/custom -> package/custom`
+  等于把同一批 Makefile 扫两遍，走 `Override` 逻辑，行为随扫描顺序漂移；
+- `scripts/feeds` 的 `install_src()` 看到 `$installed{$name}` 非空（就是上面
+  扫出来的那份）就直接 `return 0`，**不建 `package/feeds/custom/<pkg>` 链接**。
+
+所以日志里的 `⚠ package/feeds/custom 不存在` 是**正常现象**，不是索引失败。
+现在已改成以 `tmp/.packageinfo` 里有没有 `Package: <name>` 为判据，
+并删掉了那段把包拷进 `feeds/luci/applications` 的无效兜底（luci 是 git feed，
+拷进去下次 `feeds update -a` 就会被冲掉）。
+
+> 强制重建索引时要连 `tmp/info/.scan-*.stamp` 一起删：`prepare-tmpinfo` 有
+> `scan_unchanged` 优化，stamp 还在且没有更新的 Makefile 时会跳过扫描，
+> 结果 `tmp/.packageinfo` 被删了却没人重建，索引反而变空。
+
 ## 易踩的坑
 
 **包目录生成了，但固件里没有固件文件，且不报错** —— 因为 `CONFIG_PACKAGE_xxx`

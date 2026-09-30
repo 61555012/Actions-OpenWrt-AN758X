@@ -25,6 +25,21 @@ scripts/        NPU 固件脚本：
 
 只有两个，职责单一：
 
+### 索引判据：看 `tmp/.packageinfo`，不看 `package/feeds/custom`
+
+`diy-part1.sh` 把包放进 `package/custom/` 就够了 —— `prepare-tmpinfo` 直接扫
+`package/` 目录树（`find -L package -maxdepth 5 -name Makefile`），深度 3 的
+`package/custom/<pkg>/Makefile` 必然被扫到，**不需要注册 feed**。
+
+日志里出现 `⚠ package/feeds/custom 不存在` 是**正常现象**，不是索引失败：
+`scripts/feeds` 的 `install_src()` 发现包已经 installed（就是上面那份扫出来的）
+就直接返回，不会建符号链接。旧版本往 `feeds/luci/applications` 拷贝的兜底也已删除
+（luci 是 git feed，拷进去下次 `feeds update -a` 就会被冲掉）。
+
+> 强制重建索引时必须连 `tmp/info/.scan-*.stamp` 一起删。`prepare-tmpinfo` 有
+> `scan_unchanged` 优化，stamp 还在且没有更新的 Makefile 时会跳过扫描，
+> 于是 `tmp/.packageinfo` 被删了却没人重建。
+
 ### diy-part1.sh —— 拉插件
 
 **默认开启**：
