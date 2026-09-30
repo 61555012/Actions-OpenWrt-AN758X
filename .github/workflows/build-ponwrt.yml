@@ -383,7 +383,7 @@ jobs:
         cd "$BUILD_ROOT/openwrt"
         REPO_DIR="$GITHUB_WORKSPACE"
         SOC_UP=$(echo "$SOC" | tr 'a-z' 'A-Z')
-        chmod +x "$REPO_DIR/scripts/"*.sh"
+        chmod +x "$REPO_DIR"/scripts/*.sh
 
         SOC="$SOC_UP" WIFI="$NPU_WIFI" NPU_DEFAULT_WIFI="$NPU_DEFAULT_WIFI" \
         CLANKER="$NPU_CLANKER" CLANKER_REF="$NPU_SRC_REF" FW_PREFIX="$NPU_FW_PREFIX" \
