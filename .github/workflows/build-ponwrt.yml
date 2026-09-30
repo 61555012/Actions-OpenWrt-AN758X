@@ -27,6 +27,10 @@ env:
   NPU_FW_PREFIX: ${{ github.event.inputs.npu_fw_prefix || '' }}
   NPU_WLAN_MEM: ${{ github.event.inputs.npu_wlan_mem || 'true' }}
   NPU_SRC_REF: ${{ github.event.inputs.npu_src_ref || 'main' }}
+  # NPU 固件改成「可选插件包」：包名 airoha-<soc>-<wifi>-npu-firmware
+  #   CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y
+  NPU_DEFAULT_WIFI: ${{ github.event.inputs.npu_default_wifi || 'MT7916' }}
+  NPU_FILES_FALLBACK: ${{ github.event.inputs.npu_fw_files_fallback || 'false' }}
 
 on:
   repository_dispatch:
@@ -109,6 +113,27 @@ on:
           - MT7991
           - MT7993
           - NOWIFI
+          - all
+      npu_default_wifi:
+        description: 'npu_wifi=all 时默认勾选哪个变体（其余变体也会编成可选包，但不自动勾选）'
+        required: false
+        default: 'MT7916'
+        type: choice
+        options:
+          - MT7916
+          - MT7992
+          - MT7996
+          - MT7991
+          - MT7993
+          - NOWIFI
+      npu_fw_files_fallback:
+        description: '额外把 NPU 镜像铺进 files/lib/firmware/airoha（双保险；开启后包置 n 也会生效）'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
       npu_clanker:
         description: 'CLANKER=1 适配 Clanker 自改 host driver (换固件需同时换驱动，一般保持 0)'
         required: false
@@ -200,19 +225,26 @@ jobs:
         # MT7916 / MT7996 走 kite 数据面，MT7991 / MT7992 / MT7993 走 eagle，
         # 两个数据面的镜像不通用，选错 NPU 起不来或 WiFi 卸载不工作。
         NPU_WIFI="${NPU_WIFI}"
-        if [ "$NPU_WIFI" = "auto" ]; then
+        NPU_DEFAULT_WIFI="${NPU_DEFAULT_WIFI}"
+
+        # auto / all 都先按机型推断一个「默认变体」：
+        #   auto -> 只编这一个变体
+        #   all  -> 该 SoC 的所有变体都编成可选包，默认勾选这一个
+        if [ "$NPU_WIFI" = "auto" ] || [ "$NPU_WIFI" = "all" ]; then
           case "$PROFILE" in
             fiberhome_hg5585f-ct|fiberhome_hg5585f-cu|znxt_zn515xg-d|znxt_zn504xg-d)
-              NPU_WIFI="MT7916" ;;
+              NPU_DEFAULT_WIFI="MT7916" ;;
             all)
-              NPU_WIFI="MT7916"
+              NPU_DEFAULT_WIFI="MT7916"
               echo "::warning::profile=all 无法按机型推断 WiFi 芯片，默认 MT7916（所有机型只会装同一份固件）" ;;
             *)
-              NPU_WIFI="MT7916"
+              NPU_DEFAULT_WIFI="MT7916"
               echo "::warning::profile=$PROFILE 的 WiFi 芯片未登记，默认 MT7916；与实际不符请手动选 npu_wifi" ;;
           esac
+          [ "$NPU_WIFI" = "auto" ] && NPU_WIFI="$NPU_DEFAULT_WIFI"
         fi
         echo "NPU_WIFI=$NPU_WIFI" >> "$GITHUB_ENV"
+        echo "NPU_DEFAULT_WIFI=$NPU_DEFAULT_WIFI" >> "$GITHUB_ENV"
 
         echo "========================================"
         echo "SoC      : $SOC"
@@ -308,6 +340,21 @@ jobs:
         ./scripts/feeds install -a
 
     # =========================================================
+    # 4.5 把 stock NPU 固件包从 target 的 DEFAULT_PACKAGES 里摘掉
+    #
+    #     airoha-en7581-npu-firmware 是 an7581 subtarget 的 DEFAULT_PACKAGE，
+    #     defconfig 会强制拉回 =y，于是它和 ClankerNPU 可选包会同时被装进
+    #     rootfs —— 两个包装的是同一批文件名，谁生效取决于安装顺序。
+    #     摘掉之后装哪个完全由 .config 决定，可选插件才真的「可选」。
+    #     包符号依然在，stock 模式照样能 =y 勾上（见 7.5）。
+    # =========================================================
+    - name: Strip stock NPU firmware from DEFAULT_PACKAGES
+      run: |
+        cd "$BUILD_ROOT/openwrt"
+        chmod +x "$GITHUB_WORKSPACE/scripts/"*.sh
+        PONWRT_DIR=. bash "$GITHUB_WORKSPACE/scripts/strip-default-npu-fw.sh"
+
+    # =========================================================
     # 5. diy-part1.sh —— 拉取可选插件
     # =========================================================
     - name: Pull optional plugins (diy-part1.sh)
@@ -317,39 +364,61 @@ jobs:
         "$GITHUB_WORKSPACE/$DIY_P1_SH"
 
     # =========================================================
-    # 5.5 编译 NPU 固件 (ClankerNPU) —— 仅在 npu_fw=clanker 时执行
-    #     产物写进 CI 仓库的 files/lib/firmware/airoha/，下一步「加载 .config」
-    #     会把整个 files/ 拷进源码树，最后覆盖进 rootfs。
+    # 5.5 编译 NPU 固件 (ClankerNPU) 并生成「可选插件包」
+    #     仅在 npu_fw=clanker 时执行。
     #
-    #     ⚠️ 为什么不做成独立 ipk：airoha-en7581-npu-firmware 是 an7581
-    #     subtarget 的 DEFAULT_PACKAGE（target/linux/airoha/an7581/target.mk），
-    #     make defconfig 会把它强制拉回 =y，禁不掉。两个包装同名文件
-    #     要么冲突要么靠安装顺序碰运气，不如直接走 files/ 覆盖 ——
-    #     files/ 是在 ipk 安装完之后才铺进 rootfs 的，必然生效。
+    #     产物不再是 files/lib/firmware/airoha 覆盖，而是一个标准 OpenWrt 包：
+    #       package/custom/airoha-<soc>-<wifi>-npu-firmware/
+    #     于是可以直接用
+    #       CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y
+    #     在 .config / menuconfig 里勾选（由 7.5 步自动写入）。
+    #
+    #     前提：4.5 步已把 stock 固件从 DEFAULT_PACKAGES 摘掉，否则
+    #     defconfig 把它拉回 =y，两个包抢同一批文件名。
     # =========================================================
-    - name: Build NPU firmware (ClankerNPU)
+    - name: Build NPU firmware package (ClankerNPU)
       if: env.NPU_FW == 'clanker' && env.BUILD_SCOPE != 'toolchain-only'
       run: |
         set -euo pipefail
         cd "$BUILD_ROOT/openwrt"
         REPO_DIR="$GITHUB_WORKSPACE"
         SOC_UP=$(echo "$SOC" | tr 'a-z' 'A-Z')
-        chmod +x "$REPO_DIR/scripts/"*.sh
+        chmod +x "$REPO_DIR/scripts/"*.sh"
 
-        SOC="$SOC_UP" WIFI="$NPU_WIFI" CLANKER="$NPU_CLANKER" \
-        CLANKER_REF="$NPU_SRC_REF" FW_PREFIX="$NPU_FW_PREFIX" \
-        OUT_DIR="$REPO_DIR/files/lib/firmware/airoha" \
-        WORK="$REPO_DIR/.clanker-build" \
-          bash "$REPO_DIR/scripts/build-npu-fw.sh"
+        SOC="$SOC_UP" WIFI="$NPU_WIFI" NPU_DEFAULT_WIFI="$NPU_DEFAULT_WIFI" \
+        CLANKER="$NPU_CLANKER" CLANKER_REF="$NPU_SRC_REF" FW_PREFIX="$NPU_FW_PREFIX" \
+        WORK="$REPO_DIR/.clanker-build" PKG_OUT_DIR="package/custom" PONWRT_DIR=. \
+        FALLBACK_FILES="$NPU_FILES_FALLBACK" \
+          bash "$REPO_DIR/scripts/gen-npu-fw-package.sh"
+
+        # 关键：re-index custom feed。不重建索引的话 CONFIG_PACKAGE_xxx 符号
+        # 压根不存在，defconfig 会把 .config 里的 =y 当无效符号静默删掉 ——
+        # 不报错，表现为「包生成了但固件里没有」。
+        rm -f tmp/.packageinfo tmp/.targetinfo
+        ./scripts/feeds update custom 2>&1 | tail -3
+        ./scripts/feeds install -a >/dev/null 2>&1 || true
+
+        # 导出包名给后续步骤使用
+        . "$REPO_DIR/.clanker-build/npu-fw.env"
+        echo "NPU_PKG=$NPU_PKG" >> "$GITHUB_ENV"
+
+        echo "===== 生成的可选 NPU 固件包 ====="
+        ls -1 package/custom | grep 'npu-firmware' || echo "  ⚠ package/custom 下没有 NPU 包"
+        echo "===== package/feeds/custom 符号链接 ====="
+        ls -1 package/feeds/custom/ 2>/dev/null | grep 'npu-firmware' \
+          || echo "  ⚠ package/feeds/custom 下没有 NPU 包（索引可能失败）"
 
         # DTS：补 WiFi 卸载保留内存区；固件名非默认时写 firmware-name
-        SOC="$SOC" PROFILE="$PROFILE" WIFI="$NPU_WIFI" \
+        DTS_WIFI="$NPU_WIFI"
+        [ "$NPU_WIFI" = "all" ] && DTS_WIFI="$NPU_DEFAULT_WIFI"
+        SOC="$SOC" PROFILE="$PROFILE" WIFI="$DTS_WIFI" \
         FW_PREFIX="$NPU_FW_PREFIX" ADD_WLAN_MEM="$NPU_WLAN_MEM" \
         PONWRT_DIR=. bash "$REPO_DIR/scripts/apply-npu-dts.sh"
 
         echo "===== NPU 固件元信息 ====="
         cat "$REPO_DIR/.clanker-build/npu-fw.env"
-        ls -l "$REPO_DIR/files/lib/firmware/airoha/"
+        echo "----- 变体清单 -----"
+        cat "$REPO_DIR/.clanker-build/npu-fw-packages.txt"
 
     # =========================================================
     # 6. 加载 .config —— 源码基座 defconfig 打底 + 机型精简配置追加
@@ -411,44 +480,79 @@ jobs:
         fi
 
     # =========================================================
-    # 7.5 切换 NPU 固件包 —— 在 defconfig 之前改 .config
+    # 7.5 选择 NPU 固件包 —— 把结果写成显式 CONFIG_PACKAGE_xxx
     #
-    #     ⚠️ stock 固件包是 an7581/an7583 subtarget 的 DEFAULT_PACKAGE，
-    #     但 package-metadata.pl 生成的是 "default y if DEFAULT_x"（不是 select），
-    #     所以 .config 里显式写 "# CONFIG_PACKAGE_x is not set" 能压住它 ——
-    #     用户显式值优先于 default，实测有效，不需要去改 target.mk。
+    #     4.5 已把 stock 固件从 DEFAULT_PACKAGES 摘掉，所以这里写什么就是什么，
+    #     defconfig 不会再把它拉回去 —— 可选插件真正可选。
     #
-    #     clanker 模式双保险：① .config 置 n ② ClankerNPU 镜像走 files/ 覆盖
-    #     （files/ 在 ipk 安装之后才铺进 rootfs，必然盖住同名文件）
+    #       clanker : CONFIG_PACKAGE_airoha-<soc>-<wifi>-npu-firmware=y
+    #       stock   : CONFIG_PACKAGE_airoha-en7581-npu-firmware=y（或 an7583）
+    #       none    : 全部 "# ... is not set"
+    #
+    #     手动覆盖：在 configs/<机型>.config 里直接写你想勾的包，例如
+    #       CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y
+    #     本步骤检测到就会沿用你的选择，不自作主张改回去。
     # =========================================================
-    - name: Switch NPU firmware package
+    - name: Select NPU firmware package
       run: |
         cd "$BUILD_ROOT/openwrt"
         STOCK_PKGS="airoha-en7581-npu-firmware airoha-en7581-mt7996-npu-firmware airoha-an7583-npu-firmware"
 
-        disable_stock() {
-          for p in $STOCK_PKGS; do
-            sed -i "s|^CONFIG_PACKAGE_${p}=[ym]|# CONFIG_PACKAGE_${p} is not set|" .config
-          # sed -i "s|^CONFIG_PACKAGE_${p}=[ym]|CONFIG_PACKAGE_${p}=n|" .config
-          done
-        }
-
         echo "--- 修改前 .config 中的 NPU 固件行 ---"
         grep -n "npu-firmware" .config || echo "(无)"
 
-        if [ "$NPU_FW" = "clanker" ]; then
-          disable_stock
-          echo "✅ NPU 固件 = clanker (变体: ${NPU_WIFI})"
-          echo "   ① stock 包已置 n  ② files/lib/firmware/airoha 下的镜像会覆盖进 rootfs"
-        elif [ "$NPU_FW" = "none" ]; then
-          disable_stock
-          echo "::warning::npu_fw=none：不装任何 NPU 固件，NPU 不会起来（只剩有线软件转发）"
-        else
-          # stock：把可能被置 n 的行删除，让它回到 DEFAULT_PACKAGE 的 default y
-          for p in $STOCK_PKGS; do
-            sed -i "/^# CONFIG_PACKAGE_${p} is not set/d" .config
-          done
-          echo "NPU 固件保持 stock（ponwrt 自带的 linux-firmware 版本）"
+        # 用户在 configs/ 里手动勾了某个 ClankerNPU 变体？
+        USER_PKG="$(grep -oE '^CONFIG_PACKAGE_airoha-[A-Za-z0-9_-]*npu-firmware=y' .config \
+          | sed 's/^CONFIG_PACKAGE_//; s/=y$//' \
+          | grep -vE '^airoha-(en7581|en7581-mt7996|an7583)-npu-firmware$' \
+          | head -1 || true)"
+
+        # 清空所有 NPU 固件行，后面统一重写
+        sed -i '/^CONFIG_PACKAGE_airoha-[A-Za-z0-9_-]*npu-firmware=/d; /^# CONFIG_PACKAGE_airoha-[A-Za-z0-9_-]*npu-firmware is not set$/d' .config
+
+        SEL=""
+        case "$NPU_FW" in
+          clanker)
+            if [ -n "$USER_PKG" ]; then
+              SEL="$USER_PKG"
+              echo "✅ 沿用 configs 里手动勾选的 NPU 固件包: $SEL"
+            elif [ -n "${NPU_PKG:-}" ]; then
+              SEL="$NPU_PKG"
+            else
+              echo "::error::npu_fw=clanker 但没有生成任何 NPU 固件包（NPU_PKG 为空）"
+              exit 1
+            fi
+            echo "✅ NPU 固件 = clanker  ->  CONFIG_PACKAGE_${SEL}=y"
+            ;;
+          none)
+            echo "::warning::npu_fw=none：不装任何 NPU 固件，NPU 不会起来（只剩有线软件转发）"
+            ;;
+          *)
+            if [ "$SOC" = "an7583" ]; then SEL="airoha-an7583-npu-firmware"
+            else SEL="airoha-en7581-npu-firmware"; fi
+            echo "NPU 固件 = stock  ->  CONFIG_PACKAGE_${SEL}=y"
+            ;;
+        esac
+
+        # 先把三个 stock 包全部置 n
+        for p in $STOCK_PKGS; do
+          echo "# CONFIG_PACKAGE_${p} is not set" >> .config
+        done
+
+        # 再把 ClankerNPU 各变体置 n（只留 SEL 一个 =y）
+        PKGLIST="$GITHUB_WORKSPACE/.clanker-build/npu-fw-packages.txt"
+        if [ -f "$PKGLIST" ]; then
+          while IFS='|' read -r pkg soc wifi prefix rev rs ds; do
+            [ -z "$pkg" ] && continue
+            echo "# CONFIG_PACKAGE_${pkg} is not set" >> .config
+          done < "$PKGLIST"
+        fi
+
+        # 最后写入选中的那一个（后写覆盖先写）
+        if [ -n "$SEL" ]; then
+          sed -i "s|^# CONFIG_PACKAGE_${SEL} is not set$|CONFIG_PACKAGE_${SEL}=y|" .config
+          grep -q "^CONFIG_PACKAGE_${SEL}=y" .config || echo "CONFIG_PACKAGE_${SEL}=y" >> .config
+          echo "NPU_FW_SYMBOL=${SEL}" >> "$GITHUB_ENV"
         fi
 
         echo "--- 修改后 .config 中的 NPU 固件行 ---"
@@ -493,43 +597,53 @@ jobs:
 
         # =========================================================
         # NPU 固件校验（defconfig 之后）
-        #   clanker：files/ 下的镜像必须落进源码树（这是生效的关键）
-        #            stock 包是否被压到 n 只作提示，不阻断 —— 即便 defconfig
-        #            把它拉回 y，files/ 仍会盖掉它的文件
-        #   none：确认 stock 包确实被关掉
+        #   clanker：可选插件包 CONFIG_PACKAGE_airoha-<soc>-<wifi>-npu-firmware 必须 =y
+        #            stock 包必须 =n（否则两个包装同一批文件名）
+        #   stock  ：linux-firmware 官方包必须 =y
+        #   none   ：一个都不能 =y
         # =========================================================
         echo "--- defconfig 后 .config 中的 NPU 固件行 ---"
         grep -n "npu-firmware" .config || echo "(无)"
 
-        STOCK_STILL_Y=0
-        if grep -qE '^CONFIG_PACKAGE_airoha-(en7581|en7581-mt7996|an7583)-npu-firmware=[ym]' .config; then
-          STOCK_STILL_Y=1
-        fi
-
+        # =========================================================
+        # 选中的 NPU 固件包必须在 defconfig 之后依然 =y。
+        # 若包没进索引，defconfig 会静默删掉符号（不报错、固件里没这个包），
+        # 所以这里必须显式确认，并打印排查线索。
+        # =========================================================
+        SEL="${NPU_FW_SYMBOL:-}"
         if [ "${NPU_FW}" = "clanker" ] && [ "${BUILD_SCOPE}" != "toolchain-only" ]; then
-          if [ ! -d files/lib/firmware/airoha ]; then
-            echo "::error::files/lib/firmware/airoha 不存在，ClankerNPU 镜像没落进源码树"
+          if [ -z "$SEL" ] || ! grep -q "^CONFIG_PACKAGE_${SEL}=y" .config; then
+            echo "::error::ClankerNPU 可选包 ${SEL:-<空>} 在 defconfig 后未启用"
+            echo "  --- 排查线索 ---"
+            echo "  1) 包目录:        $([ -d "package/custom/${SEL}" ] && echo '存在' || echo '不存在')"
+            echo "  2) feeds 符号链接: $([ -e "package/feeds/custom/${SEL}" ] && echo '存在' || echo '不存在')"
+            echo "  3) .packageinfo:   $(grep -c "^Package: ${SEL}$" tmp/.packageinfo 2>/dev/null || echo 0) 条"
+            echo "  4) custom feed:    $(grep -cE '^src-link[[:space:]]+custom' feeds.conf.default 2>/dev/null || echo 0) 条"
+            echo "  5) 包内镜像:"
+            ls -l "package/custom/${SEL}/src/" 2>/dev/null || echo "     (无)"
             exit 1
           fi
-          NPU_BINS=$(ls files/lib/firmware/airoha/*_npu_rv32.bin files/lib/firmware/airoha/*_npu_data.bin 2>/dev/null | wc -l)
-          if [ "$NPU_BINS" -lt 2 ]; then
-            echo "::error::files/lib/firmware/airoha 下的 NPU 镜像不完整（找到 $NPU_BINS 个，需要 2 个）"
-            ls -l files/lib/firmware/airoha/ || true
-            exit 1
-          fi
-          echo "✅ NPU 固件校验通过 (clanker / ${NPU_WIFI})，files/ 里 $NPU_BINS 个镜像:"
-          ls -l files/lib/firmware/airoha/*_npu_*.bin
-          if [ "$STOCK_STILL_Y" = "1" ]; then
-            echo "::warning::stock NPU 固件包在 defconfig 后仍为 y（预期已置 n）"
-            echo "::warning::不影响结果 —— files/ 覆盖在 ipk 安装之后，仍会盖掉其文件；但可据此排查 .config 是否被追加覆盖"
+          echo "✅ NPU 固件包已启用: CONFIG_PACKAGE_${SEL}=y"
+          ls -l "package/custom/${SEL}/src/" 2>/dev/null || true
+
+          if grep -qE '^CONFIG_PACKAGE_airoha-(en7581|en7581-mt7996|an7583)-npu-firmware=[ym]' .config; then
+            echo "::warning::stock NPU 固件包仍为 y —— 与 ClankerNPU 包装同一批文件名，请检查 4.5 的 DEFAULT_PACKAGES 摘除是否生效"
           else
             echo "   stock NPU 固件包已置 n ✅"
           fi
         elif [ "${NPU_FW}" = "none" ]; then
-          if [ "$STOCK_STILL_Y" = "1" ]; then
-            echo "::warning::stock NPU 固件包仍为 y，none 未生效（检查基座与机型 config 是否都置了 n）"
+          if grep -qE '^CONFIG_PACKAGE_airoha-[A-Za-z0-9_-]*npu-firmware=[ym]' .config; then
+            echo "::warning::仍有 NPU 固件包被启用，none 未生效"
+            grep -nE '^CONFIG_PACKAGE_airoha-[A-Za-z0-9_-]*npu-firmware=[ym]' .config || true
           else
             echo "✅ NPU 固件包已全部关闭 (none)"
+          fi
+        else
+          if [ -n "$SEL" ] && grep -q "^CONFIG_PACKAGE_${SEL}=y" .config; then
+            echo "✅ stock NPU 固件包已启用: CONFIG_PACKAGE_${SEL}=y"
+          else
+            echo "::error::stock NPU 固件包 ${SEL:-<空>} 未启用"
+            exit 1
           fi
         fi
 
@@ -933,6 +1047,7 @@ jobs:
           echo "| 提交 | \`$(cd "$BUILD_ROOT"/openwrt && git rev-parse --short HEAD)\` |"
           echo "| 编译时间 | $(date '+%Y-%m-%d %H:%M:%S') (Shanghai) |"
           echo "| NPU 固件 | \`${NPU_FW}\`$( [ "$NPU_FW" = "clanker" ] && echo " (${NPU_WIFI}, ClankerNPU)" ) |"
+          [ -n "${NPU_FW_SYMBOL:-}" ] && echo "| NPU 固件包 | \`${NPU_FW_SYMBOL}\` (CONFIG_PACKAGE_...=y) |"
           echo ""
 
           # NPU 固件用 ClankerNPU 现编时，把版本/变体/校验写进 Release 便于回溯
@@ -947,6 +1062,8 @@ jobs:
               echo "| WiFi 变体 | \`${NPU_WIFI}\` |"
               echo "| 源码 ref | \`${NPU_GITREV}\` |"
               echo "| 固件名前缀 | \`${NPU_FW_PREFIX}\` |"
+              echo "| 可选包名 | \`${NPU_PKG:-}\` |"
+              echo "| 本次编出的变体 | \`${NPU_VARIANTS:-}\` |"
               echo "| npu_rv32.bin | ${NPU_RV32_SIZE} bytes (上限 2097152) |"
               echo "| npu_data.bin | ${NPU_DATA_SIZE} bytes (上限 65536) |"
               echo "| CLANKER | \`${NPU_CLANKER}\` |"
