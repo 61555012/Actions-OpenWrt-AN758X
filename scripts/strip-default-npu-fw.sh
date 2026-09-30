@@ -44,8 +44,14 @@ for f in "${FILES[@]}"; do
   fi
 done
 
+echo ""
+echo "----- 残留诊断：源码里还有哪些地方提到 stock NPU 固件 -----"
+grep -rnE "$STRIP_RE" target/ include/ package/ 2>/dev/null | head -20 \
+  || echo "  无（DEFAULT_PACKAGES 已摘干净）"
+
 if [ "$CHANGED" = "0" ]; then
-  echo "ℹ 未发现 DEFAULT_PACKAGES / DEVICE_PACKAGES 里的 stock NPU 固件包（无需改动）"
+  echo "ℹ 未在 DEFAULT_PACKAGES / DEVICE_PACKAGES 里发现 stock NPU 固件包"
+  echo "  （若上面诊断仍有残留，说明 ponwrt 换了写法，请按实际路径调整本脚本的 FILES 收集逻辑）"
 else
   echo ">>> 共修改 $CHANGED 个文件；stock NPU 固件现在完全由 .config 决定"
 fi

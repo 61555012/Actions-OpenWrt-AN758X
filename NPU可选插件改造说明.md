@@ -46,6 +46,24 @@ CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y
 | 把所有变体都编成可选包 | `npu_wifi=all`（`npu_default_wifi` 决定默认勾哪个），之后自己改 configs 挑 |
 | 完全不装固件 | `npu_fw=none` |
 
+## 关于 `CONFIG_DEFAULT_` / `CONFIG_MODULE_DEFAULT_`
+
+日志里常看到这两行跟 `CONFIG_PACKAGE_` 一起出现：
+
+```
+CONFIG_DEFAULT_airoha-en7581-npu-firmware=y
+CONFIG_MODULE_DEFAULT_airoha-en7581-npu-firmware=y
+CONFIG_PACKAGE_airoha-en7581-npu-firmware=y
+```
+
+前两个是 `DEFAULT_PACKAGES` 生成的门控符号，`CONFIG_PACKAGE_x` 的
+`default y if DEFAULT_x` 靠它触发。7.5 步会把这三类前缀**全部**写成
+`is not set`（只有选中项写 `=y`），所以即使 4.5 的摘除因 ponwrt 改了
+`target.mk` 结构而失效，defconfig 也不会把 stock 固件拉回来。
+
+> ponwrt 基座 config 里大小写不一致（写成 `airoha-en7581-MT7996-npu-firmware`），
+> 脚本一律转小写再比对，不会漏。
+
 ## 易踩的坑
 
 **包目录生成了，但固件里没有固件文件，且不报错** —— 因为 `CONFIG_PACKAGE_xxx`
