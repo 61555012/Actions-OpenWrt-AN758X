@@ -351,8 +351,10 @@ jobs:
     - name: Strip stock NPU firmware from DEFAULT_PACKAGES
       run: |
         cd "$BUILD_ROOT/openwrt"
-        chmod +x "$GITHUB_WORKSPACE/scripts/"*.sh
-        PONWRT_DIR=. bash "$GITHUB_WORKSPACE/scripts/strip-default-npu-fw.sh"
+        chmod +x "$GITHUB_WORKSPACE"/scripts/*.sh
+        # 包列表是反斜杠续行写法，脚本会跟踪续行状态整段摘除；
+        # 摘不干净会打 ::error:: 并列出 [RESIDUAL] 行（STRICT=1 可直接失败）。
+        PONWRT_DIR=. STRICT=1 bash "$GITHUB_WORKSPACE/scripts/strip-default-npu-fw.sh"
 
     # =========================================================
     # 5. diy-part1.sh —— 拉取可选插件
