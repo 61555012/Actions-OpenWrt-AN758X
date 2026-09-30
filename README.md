@@ -172,6 +172,37 @@ NPU 是 Airoha SoC 里那颗 RISC-V 核，**不是** Linux 驱动 —— host �
 | `clanker` | 用 [ClankerNPU](https://github.com/ClankerConstruction/ClankerNPU) 现编，变体由 `npu_wifi` 决定 |
 | `none` | 不装任何固件（NPU 不起，只剩有线软件转发） |
 
+### ClankerNPU 固件现在是「可选插件包」
+
+`npu_fw=clanker` 不再用 `files/lib/firmware/airoha/` 覆盖 rootfs，而是生成一个标准
+OpenWrt 包放进 `package/custom/`，之后就能用 config 符号勾选：
+
+```sh
+CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y
+```
+
+包命名规则 `airoha-<soc>-<wifi>-npu-firmware`：
+
+| SoC | 包名 |
+|---|---|
+| AN7581 | `airoha-en7581-mt7916-npu-firmware` / `airoha-en7581-mt7992-npu-firmware` / `airoha-en7581-mt7996-clanker-npu-firmware` |
+| AN7583 | `airoha-an7583-mt7916-npu-firmware` / `-mt7992-` / `-mt7993-` / `-mt7996-` / `-nowifi-` |
+| AN7552 | `airoha-an7552-mt7916-npu-firmware` / `-mt7991-` / `-mt7993-` |
+
+> AN7581 + MT7996 会撞上 linux-firmware 已有的 `airoha-en7581-mt7996-npu-firmware`，
+> 生成脚本会自动改名成 `airoha-en7581-mt7996-clanker-npu-firmware`，避免包符号重名。
+
+**怎么选**：工作流默认按 `npu_wifi` 推断出一个变体并自动写入 `=y`。想自己定，
+在 `configs/<机型>.config` 里直接写那一行即可 —— `Select NPU firmware package`
+步骤检测到就会沿用你的选择，不会覆盖。
+
+**为什么必须先摘 DEFAULT_PACKAGES**：`airoha-en7581-npu-firmware` 是 an7581
+subtarget 的 `DEFAULT_PACKAGE`，`make defconfig` 会把它强制拉回 `=y`，于是它和
+ClankerNPU 包同时进 rootfs —— 两个包装的是同一批文件名，谁生效取决于安装顺序。
+`scripts/strip-default-npu-fw.sh`（4.5 步）把这三个 stock 包从
+`target/linux/airoha/**` 的 `DEFAULT_PACKAGES` / `DEVICE_PACKAGES` 里摘掉，
+装哪个就完全由 `.config` 说了算。包符号本身还在，`npu_fw=stock` 照样能 `=y` 勾上。
+
 ### 相关输入项
 
 | 输入 | 默认 | 说明 |
@@ -207,7 +238,7 @@ diy-part1.sh 拉插件
 裁剪机型
   └─> 7.5  Select NPU firmware package  ← 统一重写 CONFIG_PACKAGE_airoha-*-npu-firmware
 diy-part2.sh
-make defconfig + 校验（含 NPU 固件校验）
+make defconfig + 校验（含 NPU 固件包符号校验）
 ```
 
 ### 典型用法
