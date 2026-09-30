@@ -219,70 +219,85 @@ done
 
 # ---------------------------------------------------------
 # 让新包进入索引
+#
+#   ⚠️ 判据是 tmp/.packageinfo，不是 package/feeds/custom
+#
+#   OpenWrt 的 prepare-tmpinfo 直接扫 package/ 目录树：
+#     include/scan.mk:  find -L package -mindepth 1 -maxdepth 5 -name Makefile
+#   package/custom/<pkg>/Makefile 深度只有 3，本来就会被扫到，
+#   **根本不需要注册 feed**。
+#
+#   以前那套 src-link custom feed 有两个问题：
+#     ① feeds/custom 指向 package/custom，而 feeds/base 已经指向 ../package，
+#        同一批 Makefile 被扫两遍，package-metadata.pl 按 Override 挑一个，
+#        行为随扫描顺序漂移；
+#     ② scripts/feeds 的 install_src() 里，$installed{$name} 已经非空
+#        （就是 ① 扫出来的那份），于是直接 return 0，压根不建
+#        package/feeds/custom/<pkg> 符号链接 ——
+#        所以「package/feeds/custom 不存在」是**正常现象**，不是索引失败。
+#        拿它当判据必然误报。
 # ---------------------------------------------------------
 if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
 
   # =========================================================
-  # 关键：把 package/custom 注册为 feed（src-link）
-  # 否则 buildroot 的 metadata.pl 不会扫描这个目录，
-  # 包符号压根不会生成，defconfig 就会把 .config 里
-  # "CONFIG_PACKAGE_xxx=y" 当作无效符号静默删除 —— 不报错，
-  # 表现为 clone 成功、目录存在，但固件里没有这个包。
+  # 强制重建索引
+  #   只删 tmp/.packageinfo 是不够的：prepare-tmpinfo 有 scan_unchanged
+  #   优化（拿 tmp/info/.scan-*.stamp 比 mtime），stamp 还在且没有更新的
+  #   Makefile 时它会跳过扫描 —— 结果 .packageinfo 被删了却没人重建，
+  #   索引反而空了。所以 stamp 也要一起删。
   # =========================================================
-  if ! grep -qE "^src-link[[:space:]]+custom" feeds.conf.default; then
-    echo "src-link custom $PWD/package/custom" >> feeds.conf.default
-    echo "✅ 已注册 feed: src-link custom $PWD/package/custom"
-  else
-    echo "feed 已注册: $(grep -E '^src-link[[:space:]]+custom' feeds.conf.default)"
-  fi
+  rm -f tmp/.packageinfo tmp/.targetinfo
+  rm -f tmp/info/.scan-packageinfo.stamp tmp/info/.scan-targetinfo.stamp
+  rm -f tmp/.config-package.in tmp/.config-target.in
 
-  # 强制重建包索引，避免沿用旧的 tmp/.packageinfo
-  rm -f tmp/.packageinfo tmp/.targetinfo 2>/dev/null
+  echo ">>> make prepare-tmpinfo（重新扫描 package/ 树）"
+  make -s prepare-tmpinfo OPENWRT_BUILD= 2>&1 | tail -5 || true
 
-  ./scripts/feeds update custom 2>&1 | tail -3
-  ./scripts/feeds install -a >/dev/null 2>&1 || true
-
+  echo "=========================================="
+  echo "包索引校验（判据：tmp/.packageinfo）"
   echo "=========================================="
   echo "package/custom 内容："
-  ls -1 "$PKG_DIR"
-  echo "------------------------------------------"
+  INDEX_MISS=""
   for d in "$PKG_DIR"/*; do
     [ -d "$d" ] || continue
-    echo "  $(basename "$d") : $([ -f "$d/Makefile" ] && echo 'Makefile ✓' || echo 'Makefile ✗ 缺失')"
+    n=$(basename "$d")
+    if [ ! -f "$d/Makefile" ]; then
+      echo "  -  $n（无根 Makefile，视为源仓库/子包容器，跳过）"
+      continue
+    fi
+    # 目录名即包名：buildroot 约定 PKG_NAME ?= $(notdir ${CURDIR})
+    if grep -qx "Package: $n" tmp/.packageinfo 2>/dev/null; then
+      echo "  ✅ $n"
+    else
+      echo "  ❌ $n —— tmp/.packageinfo 里查不到"
+      INDEX_MISS="$INDEX_MISS $n"
+      # 真实错误在这里（scan.mk 落盘路径 logs/<SCAN_DIR>/<相对目录>/dump.txt）
+      for f in "logs/package/$n/dump.txt" "logs/package/custom/$n/dump.txt"; do
+        [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; }
+      done
+    fi
   done
   echo "------------------------------------------"
-  echo "feeds 符号链接 package/feeds/custom/ :"
-  ls -1 package/feeds/custom/ 2>/dev/null || echo "  ⚠ package/feeds/custom 不存在（索引可能失败）"
-  echo "------------------------------------------"
   echo "luci.mk: $([ -f feeds/luci/luci.mk ] && echo '✓' || echo '✗ 缺失（luci app 无法解析）')"
+  echo "tmp/.packageinfo 包总数: $(grep -c '^Package: ' tmp/.packageinfo 2>/dev/null || echo 0)"
   echo "=========================================="
 
-  # =========================================================
-  # 索引失败兜底 + 真实错误输出
-  # feeds 脚本只说"详情见 dump.txt"，那个文件在日志里看不到，
-  # 这里把它打印出来，并尝试回退方案：直接塞进已安装的 luci feed
-  # =========================================================
-  if [ ! -d package/feeds/custom ] || [ -z "$(ls -A package/feeds/custom 2>/dev/null)" ]; then
-    echo "::warning::custom feed 索引未生成，打印真实错误："
-    for f in logs/feeds/custom/*/*/dump.txt logs/feeds/custom/*/dump.txt; do
-      [ -f "$f" ] && { echo "===== $f ====="; tail -25 "$f"; }
-    done 2>/dev/null
-
-    echo ""
-    echo "--- 尝试回退：拷入 feeds/luci/applications ---"
-    if [ -d feeds/luci/applications ]; then
-      for d in "$PKG_DIR"/*; do
-        [ -d "$d" ] || continue
-        n=$(basename "$d")
-        rm -rf "feeds/luci/applications/$n"
-        cp -r "$d" "feeds/luci/applications/$n"
-        echo "  已拷贝: $n"
-      done
-      ./scripts/feeds install -a >/dev/null 2>&1 || true
-      echo "  回退后 package/feeds/luci/ :"
-      ls -1 package/feeds/luci/ 2>/dev/null | grep -E "airoha-npu|pon-status|natmode" || echo "    ⚠ 仍未出现"
-    fi
+  # 必装插件（config 里是 =y 的那几个）必须进索引，否则 defconfig 会静默剔除
+  REQUIRED=""
+  [ "$ADD_AIROHA_NPU" = "true" ] && REQUIRED="$REQUIRED luci-app-airoha-npu"
+  if [ "$ADD_LUCI_APP" = "true" ]; then
+    REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi
+  HARD_MISS=""
+  for r in $REQUIRED; do
+    grep -qx "Package: $r" tmp/.packageinfo 2>/dev/null || HARD_MISS="$HARD_MISS $r"
+  done
+  if [ -n "$HARD_MISS" ]; then
+    echo "::error::以下必装插件未进入 tmp/.packageinfo，defconfig 会把 .config 里的 =y 静默剔除:$HARD_MISS"
+    echo "  已索引缺失清单:$INDEX_MISS"
+    exit 1
+  fi
+  [ -n "$INDEX_MISS" ] && echo "::warning::部分可选包未进入索引（不影响必装插件）:$INDEX_MISS"
 else
   echo "未启用任何第三方插件"
 fi
