@@ -153,9 +153,6 @@ NPU 是 Airoha SoC 里那颗 RISC-V 核，**不是** Linux 驱动 —— host �
 | `clanker` | 用 [ClankerNPU](https://github.com/ClankerConstruction/ClankerNPU) 现编，变体由 `npu_wifi` 决定 |
 | `none` | 不装任何固件（NPU 不起，只剩有线软件转发） |
 
-> 为什么要能换：烽火 HG5585F-CT/CU、兆能 ZN515XG-D / ZN504XG-D 用的是
-> **MT7916D（14c3:7906）= kite 数据面**，而 stock 镜像是 eagle 的，两者不通用。
-
 ### 相关输入项
 
 | 输入 | 默认 | 说明 |
@@ -190,35 +187,6 @@ diy-part1.sh 拉插件
 diy-part2.sh
 make defconfig + 校验（含 NPU 固件校验）
 ```
-
-### clanker 怎么替换 stock 固件
-
-`airoha-en7581-npu-firmware` 虽然是 an7581 **subtarget 的 DEFAULT_PACKAGE**
-（`target/linux/airoha/an7581/target.mk`：
-`DEFAULT_PACKAGES += airoha-en7581-npu-firmware kmod-nf-conntrack-bridge uboot-envtools`），
-但**它禁得掉**：`scripts/package-metadata.pl` 给每个包生成的是
-
-```
-config PACKAGE_airoha-en7581-npu-firmware
-	tristate "..."
-	default y if DEFAULT_airoha-en7581-npu-firmware
-```
-
-是 `default`（不是 `select`）。kconfig 里 `default` 只在符号**没有用户值**时生效，
-`.config` 里显式写 `# CONFIG_PACKAGE_x is not set` 就是用户值 n，defconfig 会保留。
-**不需要去改 `target.mk`。**
-
-`npu_fw=clanker` 时双保险，两条都走：
-
-1. step 7.5 把三个 stock 包在 `.config` 里置 `is not set` → 不装 stock 镜像；
-2. step 5.5 把 ClankerNPU 编出的镜像放进 `files/lib/firmware/airoha/`。
-   OpenWrt 是在 **ipk 安装完之后**才把 `files/` 铺进 rootfs 的，所以即便某天
-   defconfig 把 stock 拉回 `y`，这一层覆盖仍然生效。
-
-> ⚠️ 手动改 configs 时注意：**基座和机型两份 config 都要改**。
-> `configs/an7581.config`（基座）和各 `configs/<profile>.config` 里都有那行 `=y`，
-> step 6 是「先铺基座、再追加机型」，机型那行在后会覆盖基座。只改一处等于没改。
-> 走 workflow 的 `npu_fw` 选项不受此影响 —— step 7.5 用的是全局 sed，两处都处理。
 
 ### 典型用法
 
