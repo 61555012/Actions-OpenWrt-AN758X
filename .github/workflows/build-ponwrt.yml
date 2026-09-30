@@ -391,22 +391,49 @@ jobs:
         FALLBACK_FILES="$NPU_FILES_FALLBACK" \
           bash "$REPO_DIR/scripts/gen-npu-fw-package.sh"
 
-        # 关键：re-index custom feed。不重建索引的话 CONFIG_PACKAGE_xxx 符号
-        # 压根不存在，defconfig 会把 .config 里的 =y 当无效符号静默删掉 ——
-        # 不报错，表现为「包生成了但固件里没有」。
-        rm -f tmp/.packageinfo tmp/.targetinfo
-        ./scripts/feeds update custom 2>&1 | tail -3
-        ./scripts/feeds install -a >/dev/null 2>&1 || true
-
         # 导出包名给后续步骤使用
         . "$REPO_DIR/.clanker-build/npu-fw.env"
         echo "NPU_PKG=$NPU_PKG" >> "$GITHUB_ENV"
 
         echo "===== 生成的可选 NPU 固件包 ====="
-        ls -1 package/custom | grep 'npu-firmware' || echo "  ⚠ package/custom 下没有 NPU 包"
-        echo "===== package/feeds/custom 符号链接 ====="
-        ls -1 package/feeds/custom/ 2>/dev/null | grep 'npu-firmware' \
-          || echo "  ⚠ package/feeds/custom 下没有 NPU 包（索引可能失败）"
+        ls -1 package/custom | grep 'npu-firmware' \
+          || { echo "::error::package/custom 下没有 NPU 包"; exit 1; }
+        ls -l "package/custom/$NPU_PKG/src/"
+
+        # =========================================================
+        # 重建索引并校验
+        #   判据是 tmp/.packageinfo，不是 package/feeds/custom：
+        #   prepare-tmpinfo 直接扫 package/（find -L package -maxdepth 5
+        #   -name Makefile），package/custom/<pkg>/Makefile 深度 3 必然被扫到。
+        #   而 src-link custom feed 指向 package/custom，与 feeds/base
+        #   （-> ../package）重复扫描，且 feeds install 会因为包已 installed
+        #   而跳过建链接 —— 所以 package/feeds/custom 不存在是正常的。
+        #
+        #   只删 tmp/.packageinfo 不够：prepare-tmpinfo 有 scan_unchanged
+        #   优化，stamp 还在就会跳过扫描，导致索引被删了没人重建。
+        # =========================================================
+        rm -f tmp/.packageinfo tmp/.targetinfo
+        rm -f tmp/info/.scan-packageinfo.stamp tmp/info/.scan-targetinfo.stamp
+        rm -f tmp/.config-package.in tmp/.config-target.in
+
+        echo ">>> make prepare-tmpinfo（重新扫描 package/ 树）"
+        make -s prepare-tmpinfo OPENWRT_BUILD= 2>&1 | tail -5 || true
+
+        if ! grep -qx "Package: $NPU_PKG" tmp/.packageinfo 2>/dev/null; then
+          echo "::error::$NPU_PKG 未进入 tmp/.packageinfo，defconfig 会把 .config 里的 =y 静默剔除"
+          echo "  --- 排查线索 ---"
+          echo "  1) 包目录:   $([ -d "package/custom/$NPU_PKG" ] && echo '存在' || echo '不存在')"
+          echo "  2) Makefile: $([ -f "package/custom/$NPU_PKG/Makefile" ] && echo '存在' || echo '不存在')"
+          echo "  3) 包内镜像:"; ls -l "package/custom/$NPU_PKG/src/" 2>/dev/null || echo "     (无)"
+          echo "  4) 真实错误（scan.mk dump）:"
+          for f in "logs/package/custom/$NPU_PKG/dump.txt" "logs/package/$NPU_PKG/dump.txt"; do
+            [ -f "$f" ] && { echo "===== $f ====="; tail -30 "$f"; }
+          done
+          echo "  5) 手工复现: make -C package/custom/$NPU_PKG DUMP=1"
+          exit 1
+        fi
+        echo "✅ $NPU_PKG 已进入 tmp/.packageinfo"
+        grep -A2 "^Package: $NPU_PKG$" tmp/.packageinfo | head -5
 
         # DTS：补 WiFi 卸载保留内存区；固件名非默认时写 firmware-name
         DTS_WIFI="$NPU_WIFI"
@@ -646,7 +673,7 @@ jobs:
             echo "::error::ClankerNPU 可选包 ${SEL:-<空>} 在 defconfig 后未启用"
             echo "  --- 排查线索 ---"
             echo "  1) 包目录:        $([ -d "package/custom/${SEL}" ] && echo '存在' || echo '不存在')"
-            echo "  2) feeds 符号链接: $([ -e "package/feeds/custom/${SEL}" ] && echo '存在' || echo '不存在')"
+            echo "  2) 包内镜像:      $(ls -1 "package/custom/${SEL}/src/" 2>/dev/null | tr '\n' ' ')"
             echo "  3) .packageinfo:   $(grep -c "^Package: ${SEL}$" tmp/.packageinfo 2>/dev/null || echo 0) 条"
             echo "  4) custom feed:    $(grep -cE '^src-link[[:space:]]+custom' feeds.conf.default 2>/dev/null || echo 0) 条"
             echo "  5) 包内镜像:"
