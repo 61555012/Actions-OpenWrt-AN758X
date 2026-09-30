@@ -13,8 +13,12 @@ diy-part2.sh    默认值定制：① 时区改中国（Asia/Shanghai, CST-8）
                 ② 5G WiFi：国家码 CN / 信道 auto / 频宽 160MHz
 configs/        每机型一份精简 diffconfig（约 440 行，需 make defconfig 展开）
 files/          自定义 rootfs 文件，会自动拷进源码（sbin/tempinfo + 两个 uci-defaults））
-scripts/        NPU 固件现编脚本（build-npu-fw.sh / apply-npu-dts.sh）
-files/lib/firmware/airoha/   ClankerNPU 编译产物落点，会覆盖进 rootfs（构建时生成，不入库）
+packages/npu-clanker-template/   可选插件包的 Makefile 模板（占位符 @PKG_NAME@ 等）
+scripts/        NPU 固件脚本：
+                  build-npu-fw.sh         现编 ClankerNPU（拉源码 + riscv 工具链 + 体积自检）
+                  gen-npu-fw-package.sh   把编出的镜像包成「可选插件包」
+                  strip-default-npu-fw.sh 把 stock 固件从 target 的 DEFAULT_PACKAGES 里摘掉
+                  apply-npu-dts.sh        给机型 DTS 补 WiFi 卸载保留内存区 / firmware-name
 ```
 
 ## diy 脚本
@@ -153,19 +157,49 @@ NPU 是 Airoha SoC 里那颗 RISC-V 核，**不是** Linux 驱动 —— host �
 | `clanker` | 用 [ClankerNPU](https://github.com/ClankerConstruction/ClankerNPU) 现编，变体由 `npu_wifi` 决定 |
 | `none` | 不装任何固件（NPU 不起，只剩有线软件转发） |
 
-> 为什么要能换：烽火 HG5585F-CT/CU、兆能 ZN515XG-D / ZN504XG-D 用的是
-> **MT7916D（14c3:7906）= kite 数据面**，而 stock 镜像是 eagle 的，两者不通用。
+### ClankerNPU 固件现在是「可选插件包」
+
+`npu_fw=clanker` 不再用 `files/lib/firmware/airoha/` 覆盖 rootfs，而是生成一个标准
+OpenWrt 包放进 `package/custom/`，之后就能用 config 符号勾选：
+
+```sh
+CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y
+```
+
+包命名规则 `airoha-<soc>-<wifi>-npu-firmware`：
+
+| SoC | 包名 |
+|---|---|
+| AN7581 | `airoha-en7581-mt7916-npu-firmware` / `airoha-en7581-mt7992-npu-firmware` / `airoha-en7581-mt7996-clanker-npu-firmware` |
+| AN7583 | `airoha-an7583-mt7916-npu-firmware` / `-mt7992-` / `-mt7993-` / `-mt7996-` / `-nowifi-` |
+| AN7552 | `airoha-an7552-mt7916-npu-firmware` / `-mt7991-` / `-mt7993-` |
+
+> AN7581 + MT7996 会撞上 linux-firmware 已有的 `airoha-en7581-mt7996-npu-firmware`，
+> 生成脚本会自动改名成 `airoha-en7581-mt7996-clanker-npu-firmware`，避免包符号重名。
+
+**怎么选**：工作流默认按 `npu_wifi` 推断出一个变体并自动写入 `=y`。想自己定，
+在 `configs/<机型>.config` 里直接写那一行即可 —— `Select NPU firmware package`
+步骤检测到就会沿用你的选择，不会覆盖。
+
+**为什么必须先摘 DEFAULT_PACKAGES**：`airoha-en7581-npu-firmware` 是 an7581
+subtarget 的 `DEFAULT_PACKAGE`，`make defconfig` 会把它强制拉回 `=y`，于是它和
+ClankerNPU 包同时进 rootfs —— 两个包装的是同一批文件名，谁生效取决于安装顺序。
+`scripts/strip-default-npu-fw.sh`（4.5 步）把这三个 stock 包从
+`target/linux/airoha/**` 的 `DEFAULT_PACKAGES` / `DEVICE_PACKAGES` 里摘掉，
+装哪个就完全由 `.config` 说了算。包符号本身还在，`npu_fw=stock` 照样能 `=y` 勾上。
 
 ### 相关输入项
 
 | 输入 | 默认 | 说明 |
 |---|---|---|
 | `npu_fw` | `stock` | `stock` / `clanker` / `none` |
-| `npu_wifi` | `auto` | 变体：`auto` 按机型推断，或手动选 `MT7916` `MT7992` `MT7996` `MT7991` `MT7993` `NOWIFI` |
+| `npu_wifi` | `auto` | 变体：`auto` 按机型推断，或手动选 `MT7916` `MT7992` `MT7996` `MT7991` `MT7993` `NOWIFI`；`all` = 该 SoC 所有变体都编成可选包，只默认勾一个 |
+| `npu_default_wifi` | `MT7916` | `npu_wifi=all` 时默认勾选哪个变体 |
 | `npu_clanker` | `0` | `1` = 适配 Clanker 自改的 host driver。**配 ponwrt 自带驱动必须保持 0** |
 | `npu_fw_prefix` | 空 | 固件名前缀。空 = 驱动默认名（`en7581` / `an7583`），此时不用改 DTS |
 | `npu_wlan_mem` | `true` | 给机型 DTS 补 WiFi 卸载必需的保留内存区（pkt / tx-pkt / tx-bufid / ba） |
 | `npu_src_ref` | `main` | ClankerNPU 源码 ref（`main`=跟上游最新，也可填 commit sha / tag 钉死版本） |
+| `npu_fw_files_fallback` | `false` | `true` = 额外把镜像铺进 `files/lib/firmware/airoha` 兜底（**开了以后包置 n 也会生效**，破坏可选语义，仅排查用） |
 
 ### 可用变体（ClankerNPU 共 11 个）
 
@@ -181,50 +215,23 @@ NPU 是 Airoha SoC 里那颗 RISC-V 核，**不是** Linux 驱动 —— host �
 ### 执行顺序（不能反）
 
 ```
+4.5  Strip stock NPU firmware   ← 摘掉 DEFAULT_PACKAGES 里的 stock 固件（必须先做）
 diy-part1.sh 拉插件
-  └─> 5.5  Build NPU firmware (ClankerNPU)   ← 产物写进 CI 仓库的 files/lib/firmware/airoha/
+  └─> 5.5  Build NPU firmware package   ← 现编 + 生成 package/custom/airoha-<soc>-<wifi>-npu-firmware
+                                           再 re-index custom feed（不索引符号就不存在）
 载入 .config（基座 + 机型精简配置）
-      ↑ 这一步把整个 files/ 拷进源码树，NPU 镜像随之进入源码树
 裁剪机型
-  └─> 7.5  Switch NPU firmware package       ← clanker/none 把 stock 包置 n；stock 恢复
+  └─> 7.5  Select NPU firmware package  ← 统一重写 CONFIG_PACKAGE_airoha-*-npu-firmware
 diy-part2.sh
-make defconfig + 校验（含 NPU 固件校验）
+make defconfig + 校验（含 NPU 固件包符号校验）
 ```
-
-### clanker 怎么替换 stock 固件
-
-`airoha-en7581-npu-firmware` 虽然是 an7581 **subtarget 的 DEFAULT_PACKAGE**
-（`target/linux/airoha/an7581/target.mk`：
-`DEFAULT_PACKAGES += airoha-en7581-npu-firmware kmod-nf-conntrack-bridge uboot-envtools`），
-但**它禁得掉**：`scripts/package-metadata.pl` 给每个包生成的是
-
-```
-config PACKAGE_airoha-en7581-npu-firmware
-	tristate "..."
-	default y if DEFAULT_airoha-en7581-npu-firmware
-```
-
-是 `default`（不是 `select`）。kconfig 里 `default` 只在符号**没有用户值**时生效，
-`.config` 里显式写 `# CONFIG_PACKAGE_x is not set` 就是用户值 n，defconfig 会保留。
-**不需要去改 `target.mk`。**
-
-`npu_fw=clanker` 时双保险，两条都走：
-
-1. step 7.5 把三个 stock 包在 `.config` 里置 `is not set` → 不装 stock 镜像；
-2. step 5.5 把 ClankerNPU 编出的镜像放进 `files/lib/firmware/airoha/`。
-   OpenWrt 是在 **ipk 安装完之后**才把 `files/` 铺进 rootfs 的，所以即便某天
-   defconfig 把 stock 拉回 `y`，这一层覆盖仍然生效。
-
-> ⚠️ 手动改 configs 时注意：**基座和机型两份 config 都要改**。
-> `configs/an7581.config`（基座）和各 `configs/<profile>.config` 里都有那行 `=y`，
-> step 6 是「先铺基座、再追加机型」，机型那行在后会覆盖基座。只改一处等于没改。
-> 走 workflow 的 `npu_fw` 选项不受此影响 —— step 7.5 用的是全局 sed，两处都处理。
 
 ### 典型用法
 
 | 场景 | 输入 |
 |---|---|
-| HG5585F-CT / ZN515XG-D 换成 kite 固件 | `npu_fw=clanker`（`npu_wifi` 自动推断为 MT7916） |
+| HG5585F-CT / ZN515XG-D 换成 kite 固件 | `npu_fw=clanker`（`npu_wifi` 自动推断为 MT7916）→ 得到 `CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y` |
+| 把 AN7581 的全部变体都编成可选包 | `npu_wifi=all`，再在 configs 里挑一个写 `=y` |
 | Nokia XG-040G-MF（AN7583） | `profile=nokia_xg-040g-mf` + `npu_fw=clanker` + `npu_wifi=MT7993` |
 | 只想要有线 PPE / HWNAT 卸载 | `npu_wlan_mem=false` |
 | 完全不装固件 | `npu_fw=none` |
@@ -247,7 +254,11 @@ config PACKAGE_airoha-en7581-npu-firmware
    `fiberhome_hg5585f-ct/cu` 与 `znxt_zn515xg-d/znxt_zn504xg-d`；其他机型会打 warning
    并回退 MT7916，请手动选 `npu_wifi`。
 6. **`profile=all` + `clanker`** 只会给所有机型装同一份固件，脚本会 warning，建议按机型分别编。
-7. Release 说明里会带上 NPU 固件的 SoC / 变体 / gitrev / 两个 bin 的大小，便于回溯版本。
+7. Release 说明里会带上 NPU 固件的 SoC / 变体 / gitrev / 可选包名 / 两个 bin 的大小，便于回溯版本。
+8. **包没进索引的表现**：`package/custom/` 下有包目录，但固件里没有固件文件，且不报错。
+   原因是 `CONFIG_PACKAGE_xxx` 符号不存在，defconfig 把 `=y` 当无效符号静默删掉。
+   5.5 步会 re-index custom feed 并打印 `package/feeds/custom/` 链接，
+   9 步在 defconfig 后强制校验符号仍为 `=y`，失败会带 5 条排查线索直接退出。
 
 ### 刷完怎么验
 

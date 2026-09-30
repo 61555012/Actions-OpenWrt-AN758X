@@ -10,10 +10,14 @@
 #       AN7583 -> an7583
 #   自定义前缀则由 apply-npu-dts.sh 写 DTS firmware-name 属性指定。
 #
-# 产物默认落在 files/lib/firmware/airoha/ —— 该目录会随 files/ 一起被拷进
-# 源码树并覆盖进 rootfs（files/ 的铺设在 ipk 安装之后，所以必然盖住
-# linux-firmware 那份官方固件）。这样绕开了「stock 固件包是 subtarget
-# DEFAULT_PACKAGE、defconfig 强制拉回 =y、禁不掉」的问题。
+# 产物默认落在 files/lib/firmware/airoha/（历史行为：files/ 会覆盖进 rootfs）。
+#
+# ⚠️ 现在推荐走「可选插件包」：由 scripts/gen-npu-fw-package.sh 调用本脚本，
+#    再把镜像包成 package/custom/airoha-<soc>-<wifi>-npu-firmware/，
+#    于是可以用 CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y 勾选。
+#    配套两步（缺一不可）：
+#      · scripts/strip-default-npu-fw.sh 摘掉 DEFAULT_PACKAGES 里的 stock 固件
+#      · 生成包后 re-index custom feed，否则 CONFIG_PACKAGE_xxx 符号不存在
 #
 # 用法（全部走环境变量，便于 GitHub Actions 直接传）：
 #   SOC=AN7581 WIFI=MT7916 ./scripts/build-npu-fw.sh
