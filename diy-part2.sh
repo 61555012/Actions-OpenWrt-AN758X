@@ -5,8 +5,10 @@
 #
 #   1) 默认时区改成中国（Asia/Shanghai, CST-8）
 #   2) 5G WiFi：国家码 CN、信道 auto、频宽 160MHz
-#   3) 固件版本后面追加作者与构建时间（LuCI 概览页「固件版本」）
+#
 # ================================================================
+
+set -euo pipefail
 
 echo "=========================================="
 echo "默认值定制：时区 + 5G WiFi (diy-part2.sh)"
@@ -21,10 +23,12 @@ WIFI_5G_CHANNEL="${WIFI_5G_CHANNEL:-auto}"     # 信道（auto = 自动选择）
 WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"      # 160MHz（WiFi6）；回落 HE80
 WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"   # 硬件不支持 160MHz 时的回落值
 
-# ---- 固件版本后缀：作者 + 构建时间 ----
-FW_AUTHOR="${FW_AUTHOR:-qwe3017}"              # 显示在固件版本后的作者名
-FW_BUILD_TIME="${FW_BUILD_TIME:-}"             # 留空 = 自动取当前时间（Asia/Shanghai）
-FW_DESC_SUFFIX="${FW_DESC_SUFFIX:-}"           # 留空 = "· <作者> · <构建时间>"，要完全自定义就填这个
+readonly FW_AUTHOR="qwe"
+FW_BUILD_TIME="${FW_BUILD_TIME:-}"
+FW_DESC_SUFFIX="${FW_DESC_SUFFIX:-}" 
+
+echo "配置：5G country=$WIFI_5G_COUNTRY channel=$WIFI_5G_CHANNEL htmode=$WIFI_5G_HTMODE fallback=$WIFI_5G_FALLBACK"
+echo "配置：FW_AUTHOR=$FW_AUTHOR (固定)"
 
 # ---------------------------------------------------------
 # 1. 修改 config_generate 的默认值（首次开机生成的 /etc/config/system）
@@ -32,7 +36,7 @@ FW_DESC_SUFFIX="${FW_DESC_SUFFIX:-}"           # 留空 = "· <作者> · <构�
 CFG="package/base-files/files/bin/config_generate"
 
 if [ -f "$CFG" ]; then
-  # 原值形如：set system.@system[-1].timezone='UTC'
+  # 兼容 @system[-1]（旧）与 @system[0]（OpenWrt 21+）
   sed -i "s/option timezone.*/option timezone 'CST-8'/" "$CFG"
   sed -i "s/option zonename.*/option zonename 'Asia\/Shanghai'/" "$CFG"
   echo "✅ config_generate 默认时区 -> CST-8 / Asia/Shanghai"
@@ -72,7 +76,7 @@ fi
 #      a) 编译期：改无线 detect 脚本的默认值（best effort，找不到就跳过）
 #      b) 运行期：uci-defaults 首启强制刷（主要手段，与保留配置升级都生效）
 #
-#    说明：不同版本 detect 脚本路径不同（有的叫 mac80211.sh），
+#    说明：不同版本 detect 脚本路径不同（有的叫 mac80211.sh / mac80211.uc），
 #    且 uci-defaults 执行时 /etc/config/wireless 可能尚未生成，
 #    故 uci-defaults 里自带「未生成就先生成」的逻辑。
 # ---------------------------------------------------------
@@ -115,12 +119,12 @@ if [ ! -f /etc/config/wireless ]; then
 fi
 [ -f /etc/config/wireless ] || { log "未找到 /etc/config/wireless，跳过"; exit 0; }
 
-# 检测该 phy 是否支持 160MHz
+# 检测该 phy 是否支持 160MHz（兼容 "160 MHz" 与 "80+80 MHz" 两种表述）
 support_160() {
 	local phy="\$1"
 	[ -z "\$phy" ] && return 1
 	command -v iw >/dev/null 2>&1 || return 1
-	iw phy "\$phy" info 2>/dev/null | grep -q '160 MHz' || return 1
+	iw phy "\$phy" info 2>/dev/null | grep -qE '160 MHz|80\+80 MHz' || return 1
 	return 0
 }
 
@@ -155,6 +159,8 @@ done
 
 if [ "\$changed" = "1" ]; then
 	uci -q commit wireless
+	# 重载而非重启：避免首启期间无线中断后不可恢复
+	command -v wifi >/dev/null 2>&1 && wifi reload >/dev/null 2>&1 || true
 	log "已提交 wireless 配置"
 else
 	log "未找到 5G radio，未做任何修改"
@@ -169,8 +175,7 @@ echo "✅ uci-defaults 5G WiFi 脚本已写入（country=$WIFI_5G_COUNTRY channe
 # wpad-openssl = 完整版 hostapd，支持 HE160；
 # 若用的是 wpad-basic / hostapd-basic（精简版），160MHz 可能不生效。
 if [ -f .config ]; then
-  if grep -q "^CONFIG_PACKAGE_wpad-basic" .config || \
-     grep -q "^CONFIG_PACKAGE_hostapd-basic" .config; then
+  if grep -qE "^CONFIG_PACKAGE_(wpad-basic|hostapd-basic)=y" .config; then
     echo "::warning::检测到精简版 wpad/hostapd-basic，160MHz 可能不支持"
   fi
   # 无线工具：uci-defaults 里的能力检测需要 iw
@@ -181,23 +186,8 @@ if [ -f .config ]; then
   fi
 fi
 
-# ---------------------------------------------------------
-# 5. 固件版本追加「作者 + 构建时间」
-#
-#    LuCI 概览页「固件版本」显示的是 /etc/openwrt_release 里的
-#    DISTRIB_DESCRIPTION。该文件由 base-files 提供，编译时装完 ipk 后
-#    用 VERSION_SED_SCRIPT 把模板里的占位符替换掉：
-#        %D = VERSION_DIST      （PonWrt）
-#        %V = VERSION_NUMBER    （SNAPSHOT）
-#        %C = VERSION_CODE      （ponwrt 默认为空）
-#
-#    所以这里改的是**模板** package/base-files/files/etc/openwrt_release，
-#    编译时自动替换 —— 不需要首启脚本，也不会被 ipk 覆盖。
-#    改 files/etc/openwrt_release 反而不行：那会写死版本号，丢了 %D %V。
-# ---------------------------------------------------------
 [ -z "$FW_BUILD_TIME" ] && FW_BUILD_TIME="$(TZ="${TZ:-Asia/Shanghai}" date '+%Y-%m-%d %H:%M')"
 
-# %C 为空时模板里保留 %C 会留下连续空格，故按需决定要不要带上
 VER_CODE="$(sed -n 's/^CONFIG_VERSION_CODE="\(.*\)"$/\1/p' .config 2>/dev/null || true)"
 if [ -n "$VER_CODE" ]; then
   DESC_BODY='%D %V %C'
@@ -216,6 +206,7 @@ OSREL_LINE="OPENWRT_RELEASE=\"${DESC_BODY} ${FW_DESC_SUFFIX}\""
 export FW_DESC_LINE OSREL_LINE
 
 if [ -f "$RELEASE_TPL" ]; then
+  # 只替换 DISTRIB_DESCRIPTION 行，不动 DISTRIB_ID / DISTRIB_RELEASE 等其它行
   perl -i -pe 's/^DISTRIB_DESCRIPTION=.*/$ENV{FW_DESC_LINE}/' "$RELEASE_TPL"
   echo "✅ 固件版本模板 -> $FW_DESC_LINE"
 else
@@ -228,4 +219,4 @@ if [ -f "$OSREL_TPL" ]; then
   echo "✅ os-release 同步 -> $OSREL_LINE"
 fi
 
-echo "🎉 diy-part2.sh 执行完毕"
+echo "🎉 diy-part2.sh 执行完毕 (author=$FW_AUTHOR)"
