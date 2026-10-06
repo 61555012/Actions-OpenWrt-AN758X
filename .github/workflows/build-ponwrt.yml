@@ -32,7 +32,7 @@ env:
   NPU_DEFAULT_WIFI: ${{ github.event.inputs.npu_default_wifi || 'MT7916' }}
   NPU_FILES_FALLBACK: ${{ github.event.inputs.npu_fw_files_fallback || 'false' }}
   # 固件版本后缀（显示在 LuCI 概览页「固件版本」后面）
-  FW_AUTHOR: ${{ github.event.inputs.fw_author || 'qwe' }}
+  FW_AUTHOR: 'qwe' 
   FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
   FW_DESC_SUFFIX: ''               # 留空 = "· <作者> · <构建时间>"；填了则完全自定义
 
