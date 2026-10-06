@@ -31,6 +31,10 @@ env:
   #   CONFIG_PACKAGE_airoha-en7581-mt7916-npu-firmware=y
   NPU_DEFAULT_WIFI: ${{ github.event.inputs.npu_default_wifi || 'MT7916' }}
   NPU_FILES_FALLBACK: ${{ github.event.inputs.npu_fw_files_fallback || 'false' }}
+  # 固件版本后缀（显示在 LuCI 概览页「固件版本」后面）
+  FW_AUTHOR: ${{ github.event.inputs.fw_author || 'qwe' }}
+  FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
+  FW_DESC_SUFFIX: ''               # 留空 = "· <作者> · <构建时间>"；填了则完全自定义
 
 on:
   repository_dispatch:
@@ -158,6 +162,10 @@ on:
         description: 'ClankerNPU 源码 ref (默认 main=跟上游最新；也可填 commit sha / tag 钉死版本)'
         required: false
         default: 'main'
+      fw_author:
+        description: '固件版本后面显示的作者名（LuCI 概览页「固件版本」）'
+        required: false
+        default: 'qwe3017'
       upload_release:
         description: '固件发布到 Release（false 则只传 Artifact）'
         required: false
@@ -624,7 +632,10 @@ jobs:
       run: |
         cd "$BUILD_ROOT/openwrt"
         chmod +x "$GITHUB_WORKSPACE/$DIY_P2_SH"
-        "$GITHUB_WORKSPACE/$DIY_P2_SH"
+        FW_AUTHOR="$FW_AUTHOR" FW_BUILD_TIME="$FW_BUILD_TIME" FW_DESC_SUFFIX="$FW_DESC_SUFFIX" \
+        WIFI_5G_COUNTRY="$WIFI_5G_COUNTRY" WIFI_5G_CHANNEL="$WIFI_5G_CHANNEL" \
+        WIFI_5G_HTMODE="$WIFI_5G_HTMODE" WIFI_5G_FALLBACK="$WIFI_5G_FALLBACK" \
+          "$GITHUB_WORKSPACE/$DIY_P2_SH"
 
     # =========================================================
     # 9. defconfig + 生成工具链缓存 Key + 校验机型
