@@ -205,18 +205,18 @@ FW_DESC_LINE="DISTRIB_DESCRIPTION='${DESC_BODY} ${FW_DESC_SUFFIX}'"
 OSREL_LINE="OPENWRT_RELEASE=\"${DESC_BODY} ${FW_DESC_SUFFIX}\""
 export FW_DESC_LINE OSREL_LINE
 
-if [ -f "$RELEASE_TPL" ]; then
+#if [ -f "$RELEASE_TPL" ]; then
   # 只替换 DISTRIB_DESCRIPTION 行，不动 DISTRIB_ID / DISTRIB_RELEASE 等其它行
-  perl -i -pe 's/^DISTRIB_DESCRIPTION=.*/$ENV{FW_DESC_LINE}/' "$RELEASE_TPL"
-  echo "✅ 固件版本模板 -> $FW_DESC_LINE"
-else
-  echo "::warning::未找到 $RELEASE_TPL，固件版本不会带构建信息"
-fi
+#  perl -i -pe 's/^DISTRIB_DESCRIPTION=.*/$ENV{FW_DESC_LINE}/' "$RELEASE_TPL"
+#  echo "✅ 固件版本模板 -> $FW_DESC_LINE"
+#else
+#  echo "::warning::未找到 $RELEASE_TPL，固件版本不会带构建信息"
+#fi
 
 # os-release 同步（部分工具/LuCI 版本读它；%B 只是 SOURCE_DATE_EPOCH 时间戳，不好看）
-if [ -f "$OSREL_TPL" ]; then
-  perl -i -pe 's/^OPENWRT_RELEASE=.*/$ENV{OSREL_LINE}/' "$OSREL_TPL"
-  echo "✅ os-release 同步 -> $OSREL_LINE"
-fi
+#if [ -f "$OSREL_TPL" ]; then
+#  perl -i -pe 's/^OPENWRT_RELEASE=.*/$ENV{OSREL_LINE}/' "$OSREL_TPL"
+#  echo "✅ os-release 同步 -> $OSREL_LINE"
+#fi
 
 echo "🎉 diy-part2.sh 执行完毕 (author=$FW_AUTHOR)"
